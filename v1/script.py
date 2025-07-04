@@ -1,31 +1,25 @@
 import os
 import time
-import torch
-import argparse
-import asyncio
-import base64
 import json
-import datetime
-from typing import Literal, TypedDict
-
-import pyaudio
-import requests
-from websockets.asyncio.client import ClientConnection, connect
-from websockets.exceptions import ConnectionClosedOK
-
-import requests
-import logging
+import torch
 import base64
+import aiohttp
+import logging
 import pyaudio
 import asyncio
+import requests
+import datetime
+import argparse
+import threading
 import numpy as np
-from typing import List
-from typing import Callable
+
 from collections import deque
+from websockets.exceptions import ConnectionClosedOK
+from silero_vad import load_silero_vad, get_speech_timestamps
+from typing import Callable, List, Literal, TypedDict, Optional
 from websockets.asyncio.client import ClientConnection, connect
-from silero_vad import load_silero_vad, read_audio, get_speech_timestamps
-from custom_exceptions import VADSetupException, AudioStreamStartException, DeviceNotFoundException, InvalidGladiaKeyException
-from typing import Literal, TypedDict
+from custom_exceptions import AudioStreamStartException, DeviceNotFoundException, InvalidGladiaKeyException
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -36,7 +30,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 for noisy_logger in ["urllib3", "torch", "pyaudio", "requests"]:
     logging.getLogger(noisy_logger).setLevel(logging.ERROR)
-    
+
 
 class InitiateResponse(TypedDict):
     id: str
@@ -118,17 +112,16 @@ def test_device_configuration(device_index: int, sample_rate: int, channels: int
         return False
 
 
-class RobustRealTimeVAD:
-    def __init__(self, device_name: str, model, preferred_sample_rate=16000, chunk_size=1024):
-        self.device_info = get_device_info(device_name)
-        self.model = model
+class AudioBuffer:
+    def __init__(self, device: AudioDevice, preferred_sample_rate: int = 16_000, 
+                 chunk_size: int = 1024, buffer_seconds: int = 3):
+        self.device_info = device
         self.chunk_size = chunk_size
-        self.audio_buffer = deque()
         
-        # Auto-detect best sample rate
+        # Configuration du sample rate
         possible_rates = [preferred_sample_rate, 44100, 48000, 22050, 8000]
         self.sample_rate = None
-        
+
         for rate in possible_rates:
             if test_device_configuration(self.device_info.index, rate):
                 self.sample_rate = rate
@@ -136,12 +129,17 @@ class RobustRealTimeVAD:
         
         if self.sample_rate is None:
             self.sample_rate = int(self.device_info.sample_rate)
+
+        # Buffer circulaire thread-safe
+        self.data = deque(maxlen=self.sample_rate * buffer_seconds)
+        self.lock = threading.Lock()
         
-        # Adjust buffer size based on sample rate
-        buffer_seconds = 3
-        self.audio_buffer = deque(maxlen=self.sample_rate * buffer_seconds)
-        
+        # Stream PyAudio
+        self.p = None
+        self.stream = None
+
     def start_stream(self):
+        """Démarre le stream audio avec callback"""
         self.p = pyaudio.PyAudio()
         
         try:
@@ -159,57 +157,57 @@ class RobustRealTimeVAD:
         except Exception as e:
             self.p.terminate()
             raise AudioStreamStartException(self.device_info.name, str(e)) from e
+        
+        return self
 
-    def _audio_callback(self, in_data, frame_count, time_info, status):
+    def _audio_callback(self, in_data, *_):
+        """Callback appelé automatiquement par PyAudio"""
         try:
             audio_data = np.frombuffer(in_data, dtype=np.int16)
-            self.audio_buffer.extend(audio_data)
+            with self.lock:
+                self.data.extend(audio_data)
         except Exception as e:
             logger.error(f"Audio callback error: {e}")        
         return (in_data, pyaudio.paContinue)
-    
-    def detect_speech(self):
-        if len(self.audio_buffer) < self.sample_rate:
-            return []
+
+    def get_chunk(self, chunk_size: int = 3200) -> Optional[bytes]:
+        """
+        Extrait un chunk de données audio du buffer de manière thread-safe
+        
+        Args:
+            chunk_size: Nombre d'échantillons à extraire
             
-        try:
-            # Convert to tensor for Silero VAD
-            audio_array = np.array(list(self.audio_buffer), dtype=np.float32)
-            audio_tensor = torch.FloatTensor(audio_array) / 32768.0
-            
-            # Resample if necessary for VAD (Silero expects 16kHz)
-            if self.sample_rate != 16000:
-                # Simple downsampling for VAD
-                step = self.sample_rate // 16000
-                audio_tensor = audio_tensor[::step]
-            
-            speech_timestamps = get_speech_timestamps(
-                audio_tensor,
-                self.model,
-                return_seconds=True,
-                sampling_rate=16000
-            )
-            
-            return speech_timestamps
-            
-        except Exception as e:
-            logger.error(f"VAD detection error: {e}")
-            return []
-    
-    def get_recent_audio(self, duration_seconds=2):
-        """Get recent audio data for processing"""
-        if len(self.audio_buffer) < self.sample_rate * duration_seconds:
-            return None
-            
-        recent_samples = int(self.sample_rate * duration_seconds)
-        audio_data = np.array(list(self.audio_buffer)[-recent_samples:], dtype=np.float32)
-        return audio_data / 32768.0  # Normalize
-    
+        Returns:
+            bytes: Données audio en format int16, ou None si pas assez de données
+        """
+        with self.lock:
+            if len(self.data) >= chunk_size:
+                # Extraire les données du buffer
+                chunk_data = []
+                for _ in range(chunk_size):
+                    if self.data:
+                        chunk_data.append(self.data.popleft())
+                    else:
+                        break
+                
+                if chunk_data:
+                    # Convertir en bytes
+                    chunk_array = np.array(chunk_data, dtype=np.int16)
+                    return chunk_array.tobytes()
+        
+        return None
+
+    def get_buffer_size(self) -> int:
+        """Retourne la taille actuelle du buffer"""
+        with self.lock:
+            return len(self.data)
+
     def stop_stream(self):
-        if hasattr(self, 'stream'):
+        """Arrête le stream audio"""
+        if hasattr(self, 'stream') and self.stream:
             self.stream.stop_stream()
             self.stream.close()
-        if hasattr(self, 'p'):
+        if hasattr(self, 'p') and self.p:
             self.p.terminate()
 
 
@@ -227,27 +225,6 @@ def list_audio_devices():
     
     p.terminate()
     return devices
-
-def setup_realtime_vad(device_name: str, model):
-    """
-    Initialize and start real-time Voice Activity Detection (VAD) using a specified audio device.
-
-    Args:
-        device_name (str): Name or part of the name of the input audio device (e.g., "Logitech").
-        model (torch.nn.Module): Preloaded Silero VAD model used for speech detection.
-
-    Returns:
-        RobustRealTimeVAD: An instance of the VAD detector with the audio stream started.
-
-    Raises:
-        VADSetupException: If the device cannot be initialized or the stream cannot be started.
-    """
-    try:
-        vad_detector = RobustRealTimeVAD(device_name, model)
-        vad_detector.start_stream()
-        return vad_detector
-    except Exception as e:
-        raise VADSetupException(f"Unable to start VAD on device '{device_name}': {e}") from e
 
 
 def is_gladia_key_valid(key: str, url: str = "https://api.gladia.io/v2/pre-recorded") -> str:
@@ -306,7 +283,6 @@ def make_wss_state_tracker(silence_timeout_seconds: int = 90) -> Callable[[bool]
 
     return is_wss_open
 
-import aiohttp
 
 async def init_live_session(config: StreamingConfiguration, gladia_key: str) -> InitiateResponse:
     async with aiohttp.ClientSession() as session:
@@ -322,10 +298,11 @@ async def init_live_session(config: StreamingConfiguration, gladia_key: str) -> 
                 exit(response.status)
             return await response.json()
         
+
 P = pyaudio.PyAudio()
 
 CHANNELS = 1
-FORMAT = pyaudio.paInt16
+
 FRAMES_PER_BUFFER = 3200
 SAMPLE_RATE = 16_000
 
@@ -341,30 +318,35 @@ STREAMING_CONFIGURATION: StreamingConfiguration = {
 }
 
 
-async def send_audio(socket: ClientConnection) -> None:
-    stream = P.open(
-        format=FORMAT,
-        channels=CHANNELS,
-        rate=SAMPLE_RATE,
-        input=True,
-        frames_per_buffer=FRAMES_PER_BUFFER,
-    )
 
-    while True:
-        data = stream.read(FRAMES_PER_BUFFER)
-        data = base64.b64encode(data).decode("utf-8")
-        json_data = json.dumps({"type": "audio_chunk", "data": {"chunk": str(data)}})
-        try:
-            await socket.send(json_data)
-            await asyncio.sleep(0.1)  # Send audio every 100ms
-        except ConnectionClosedOK:
-            return
+class WebSocket:
+    def __init__(self, gladia_key: str, config):
+        self.gladia_key = gladia_key
+        self.config = config
+        
+        self.is_created: bool = False
+        self.socket: Optional[ClientConnection] = None
 
+    async def create(self):
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://api.gladia.io/v2/live",
+                headers={"X-Gladia-Key": self.gladia_key},
+                json=config,
+                timeout=3
+            ) as response:
+                if not response.status.ok:
+                    text = await response.text()
+                    logger.error(f"{response.status}: {text or response.reason}")
+                    exit(response.status)
+                return await response.json()
 
-async def stop_recording(websocket: ClientConnection) -> None:
-    print(">>>>> Ending the recording…")
-    await websocket.send(json.dumps({"type": "stop_recording"}))
-    await asyncio.sleep(0)
+    async def stop(self) -> None:
+        if self.socket:
+            await self.socket.send(json.dumps({"type:": "stop_recording"}))
+            await asyncio.sleep(0)
+        self.socket = None
+        self.is_created = False
 
 
 
@@ -392,45 +374,264 @@ async def print_messages_from_socket(socket: ClientConnection) -> None:
 
 
 class WSSessionManager:
-    def __init__(self, streaming_config, gladia_key: str, silence_timeout: int =90):
-        self.streaming_config = streaming_config
-        self.websocket: ClientConnection | None = None
-        self.silence_start: float | None = None
-        self.silence_timeout = silence_timeout
-        self.send_audio_task = None
-        self.recv_text_task = None
+    def __init__(self, gladia_key: str, silence_timeout: int = 90):
         self.gladia_key = gladia_key
+        self.silence_timeout = silence_timeout
+        
+        # État de la session
+        self.websocket: Optional[ClientConnection] = None
+        self.session_url: Optional[str] = None
+        self.silence_start: Optional[float] = None
+        self.is_session_active = False
+        
+        # Tâches asynchrones
+        self.send_audio_task: Optional[asyncio.Task] = None
+        self.recv_messages_task: Optional[asyncio.Task] = None
+        
+        # Configuration streaming
+        self.streaming_config = {
+            "encoding": "wav/pcm",
+            "sample_rate": 16000,
+            "bit_depth": 16,
+            "channels": 1,
+            "language_config": {
+                "languages": [],
+                "code_switching": True,
+            },
+        }
 
-    async def start_session(self):
-        response = await init_live_session(self.streaming_config, self.gladia_key)
-        self.websocket = await connect(response["url"])
-        logger.info("WSS session started.")
-        self.send_audio_task = asyncio.create_task(send_audio(self.websocket))
-        self.recv_text_task = asyncio.create_task(print_messages_from_socket(self.websocket))
+    async def _init_session(self) -> str:
+        """Initialise une nouvelle session Gladia et retourne l'URL WebSocket"""
+        import aiohttp
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://api.gladia.io/v2/live",
+                headers={"X-Gladia-Key": self.gladia_key},
+                json=self.streaming_config,
+                timeout=3
+            ) as response:
+                if response.status not in (200, 201):
+                    text = await response.text()
+                    logger.error(f"Erreur init session: {response.status} - {text}")
+                    raise Exception(f"Erreur init session: {response.status}")
+                
+                data = await response.json()
+                return data["url"]
 
-    async def stop_session(self):
+    async def _send_audio_loop(self, audio_buffer):
+        """Boucle d'envoi audio en continu depuis le buffer callback"""
+        logger.info('Test')
+        try:
+            chunk_size = 3200  # Taille de chunk pour l'envoi
+            
+            while self.is_session_active and self.websocket:
+                try:
+                    # Récupérer un chunk depuis le buffer
+                    chunk_bytes = audio_buffer.get_chunk(chunk_size)
+                    
+                    if chunk_bytes:
+                        # Encoder en base64
+                        encoded_data = base64.b64encode(chunk_bytes).decode("utf-8")
+                        
+                        json_data = json.dumps({
+                            "type": "audio_chunk", 
+                            "data": {"chunk": encoded_data}
+                        })
+                        
+                        await self.websocket.send(json_data)
+                        logger.info(f"📤 Chunk envoyé ({len(chunk_bytes)} bytes)")
+                    
+                    await asyncio.sleep(0.1)  # 100ms entre chaque envoi
+                        
+                except Exception as e:
+                    logger.error(f"Erreur envoi audio: {e}")
+                    break
+                    
+        except ConnectionClosedOK:
+            logger.info("Connexion WebSocket fermée normalement")
+        except Exception as e:
+            logger.error(f"Erreur dans send_audio_loop: {e}")
+
+    def _format_duration(self, seconds: float) -> str:
+        """Formate une durée en secondes au format HH:MM:SS.mmm"""
+        milliseconds = int(seconds * 1000)
+        return datetime.time(
+            hour=milliseconds // 3_600_000,
+            minute=(milliseconds // 60_000) % 60,
+            second=(milliseconds // 1_000) % 60,
+            microsecond=(milliseconds % 1_000) * 1_000,
+        ).isoformat(timespec="milliseconds")
+
+    async def _receive_messages_loop(self):
+        """Boucle de réception et affichage des messages"""
+        try:
+            logger.info('Recieve message', self.websocket)
+            async for message in self.websocket:
+                content = json.loads(message)
+                
+                if content["type"] == "transcript" and content["data"]["is_final"]:
+                    start = self._format_duration(content["data"]["utterance"]["start"])
+                    end = self._format_duration(content["data"]["utterance"]["end"])
+                    text = content["data"]["utterance"]["text"].strip()
+                    print(f"🎤 {start} --> {end} | {text}")
+                
+                elif content["type"] == "post_final_transcript":
+                    print("\nSession terminée")
+                    print(json.dumps(content, indent=2, ensure_ascii=False))
+                    
+        except ConnectionClosedOK:
+            logger.info("Connexion WebSocket fermée")
+        except Exception as e:
+            logger.error(f"Erreur réception messages: {e}")
+
+    async def _start_session(self, audio_buffer):
+        try:
+            logger.info("Starting WebSocket Session...")
+            
+            self.session_url = await self._init_session()
+            
+            self.websocket = await connect(self.session_url)
+            self.is_session_active = True
+            
+            # Démarrer les tâches asynchrones
+            self.send_audio_task = asyncio.create_task(
+                self._send_audio_loop(audio_buffer)
+            )
+            self.recv_messages_task = asyncio.create_task(
+                self._receive_messages_loop()
+            )
+            
+            logger.info("✅ Session WebSocket démarrée")
+            
+        except Exception as e:
+            logger.error(f"Erreur démarrage session: {e}")
+            await self._cleanup_session()
+
+    async def _stop_session(self):
+        """Arrête la session WebSocket proprement"""
+        if not self.is_session_active:
+            return
+            
+        logger.info("🛑 Arrêt session WebSocket...")
+        
+        try:
+            # Envoyer signal d'arrêt
+            if self.websocket:
+                await self.websocket.send(json.dumps({"type": "stop_recording"}))
+                await asyncio.sleep(0.1)
+                
+        except Exception as e:
+            logger.error(f"Erreur lors de l'arrêt: {e}")
+        finally:
+            await self._cleanup_session()
+
+    async def _cleanup_session(self):
+        """Nettoie les ressources de la session"""
+        self.is_session_active = False
+        
+        # Annuler les tâches
+        if self.send_audio_task and not self.send_audio_task.done():
+            self.send_audio_task.cancel()
+            try:
+                await self.send_audio_task
+            except asyncio.CancelledError:
+                pass
+                
+        if self.recv_messages_task and not self.recv_messages_task.done():
+            self.recv_messages_task.cancel()
+            try:
+                await self.recv_messages_task
+            except asyncio.CancelledError:
+                pass
+        
+        # Fermer WebSocket
         if self.websocket:
-            await stop_recording(self.websocket)
-            await asyncio.wait([self.send_audio_task, self.recv_text_task])
-            await self.websocket.close()
-            logger.info("WSS session closed.")
-        self.websocket = None
+            try:
+                await self.websocket.close()
+            except:
+                pass
+            self.websocket = None
+            
+        self.session_url = None
         self.silence_start = None
+        
+        logger.info("🧹 Session nettoyée")
 
-    async def manage(self, is_speaking: bool):
+    async def manage(self, audio_buffer, is_speaking: bool):
+        """
+        Méthode principale à appeler dans la boucle principale.
+        Gère automatiquement l'ouverture/fermeture des sessions selon l'activité vocale.
+        """
         if is_speaking:
-            if not self.websocket:
-                await self.start_session()
+            if not self.is_session_active:
+                await self._start_session(audio_buffer)
+            
             self.silence_start = None
-        elif self.websocket:
-            if self.silence_start is None:
-                self.silence_start = time.time()
-            elif time.time() - self.silence_start > self.silence_timeout:
-                await self.stop_session()
+            
+        else:
+            # Pas de parole
+            if self.is_session_active:
+                # Commencer à compter le silence
+                if self.silence_start is None:
+                    self.silence_start = time.time()
+                    logger.debug("🔇 Début du silence")
+                
+                # Vérifier si le timeout est atteint
+                elif time.time() - self.silence_start > self.silence_timeout:
+                    logger.info(f"⏰ Timeout silence ({self.silence_timeout}s) atteint")
+                    await self._stop_session()
+
+    async def cleanup(self):
+        """Nettoyage final à appeler avant la fermeture du programme"""
+        await self._cleanup_session()
+
+
+def detect_speech(audio_buffer: AudioBuffer, model: object) -> bool:
+        """
+        Detects speech activity in an audio buffer using a voice activity detection (VAD) model.
+
+        Args:
+            audio_buffer (deque): A deque containing raw PCM 16-bit mono audio samples.
+            model: The Silero VAD model used for speech detection.
+
+        Returns:
+            bool: True if speech is detected in the buffer, False otherwise.
+
+        Notes:
+            - The function expects the audio buffer to contain at least 1 second of audio.
+            - If the sample rate is not 16 kHz, the audio is downsampled to match the Silero model's expected input.
+            - Audio samples are normalized to the [-1.0, 1.0] float32 range before inference.
+        """
+        if len(audio_buffer.data) < audio_buffer.sample_rate:
+            return False
+            
+        try:
+            # Convert to tensor for Silero VAD
+            audio_array = np.array(list(audio_buffer.data), dtype=np.float32)
+            audio_tensor = torch.FloatTensor(audio_array) / 32768.0
+            
+            # Resample if necessary for VAD (Silero expects 16kHz)
+            if audio_buffer.sample_rate != 16000:
+                # Simple downsampling for VAD
+                step = audio_buffer.sample_rate // 16000
+                audio_tensor = audio_tensor[::step]
+            
+            speech_timestamps = get_speech_timestamps(
+                audio_tensor,
+                model,
+                return_seconds=True,
+                sampling_rate=16000
+            )
+            
+            return bool(speech_timestamps)
+            
+        except Exception as e:
+            logger.error(f"VAD detection error: {e}")
+            return False
 
 
 async def main(*, allowed_languages: List[str] = ["auto", "fr", "en", "es", "de"],
-                load_model: object = load_silero_vad,
                 silence_timeout_seconds: int = 30) -> None:
     """
     Main entry point: parses CLI args, validates Gladia key, sets up VAD and monitors speech.
@@ -446,34 +647,36 @@ async def main(*, allowed_languages: List[str] = ["auto", "fr", "en", "es", "de"
     """
     parser = argparse.ArgumentParser()
 
-    parser.add_argument("-ad", "--agent-device", type=get_device_info, help="USB device name for agent mic (e.g., 'Logitech').")
-    parser.add_argument("-ag", "--agent-language", choices=allowed_languages, default="auto", help="Language spoken by the agent.")
-    parser.add_argument("-pd", "--phone-device", type=get_device_info, help="USB device name for phone mic.")
-    parser.add_argument("-pl", "--phone-language", choices=allowed_languages, default="auto", help="Language spoken by the phone.")
-    parser.add_argument("-gk", "--gladia-key", type=str, help="Gladia API key. If omitted, will try the 'GLADIA_KEY' environment variable.")
+    parser.add_argument("--agent-device",   type=get_device_info,      help="USB device name for agent mic (e.g., 'Logitech').")
+    parser.add_argument("--agent-language", choices=allowed_languages, default="auto", help="Language spoken by the agent.")
+    parser.add_argument("--phone-device",   type=get_device_info,      help="USB device name for phone mic.")
+    parser.add_argument("--phone-language", choices=allowed_languages, default="auto", help="Language spoken by the phone.")
+    parser.add_argument("--gladia-key",     type=str,                  help="Gladia API key. If omitted, will try the 'GLADIA_KEY' environment variable.")
 
     args = parser.parse_args()
 
     gladia_key = args.gladia_key or os.getenv("GLADIA_API_KEY")
     gladia_key = is_gladia_key_valid(gladia_key)
 
-    model = load_model()
-
-    vad_detector = setup_realtime_vad(args.agent_device.name, model)
-    wss_manager = WSSessionManager(STREAMING_CONFIGURATION, gladia_key, silence_timeout_seconds)
+    vad_model = load_silero_vad()
+    audio_buffer = AudioBuffer(args.agent_device).start_stream()
+    #  wss_manager = WSSessionManager(gladia_key, silence_timeout_seconds)
+    #  vad_detector = setup_realtime_vad(args.agent_device.name, model)
+    #  wss_manager = WSSessionManager(STREAMING_CONFIGURATION, gladia_key, silence_timeout_seconds)
+    websocket = None
+    timer = None
 
     try:
         while True:
-            speech_segments = vad_detector.detect_speech()
-            is_speaking = bool(speech_segments)
-            logger.info(is_speaking)
-            #  await wss_manager.manage(is_speaking)
+            is_speaking = detect_speech(audio_buffer, vad_model)
+            print(f'\r{int(is_speaking)}', end='')
             await asyncio.sleep(0.1)
+            
     except KeyboardInterrupt:
-        pass
+        print("\n🔴 Arrêt demandé par l'utilisateur")
     finally:
-        #  await wss_manager.stop_session()
-        vad_detector.stop_stream()
+        #  await wss_manager.cleanup()
+        audio_buffer.stop_stream()
 
 
 if __name__ == "__main__":
