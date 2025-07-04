@@ -1,30 +1,44 @@
-import re
 import os
-import argparse
-import requests
-import subprocess
-from typing import List
-from silero_vad import load_silero_vad, read_audio, get_speech_timestamps
-import pyaudio
-import numpy as np
-from collections import deque
 import time
 import torch
+import argparse
+import requests
+import logging
+import pyaudio
+import numpy as np
+from typing import List
+from typing import Callable
+from collections import deque
+from silero_vad import load_silero_vad, read_audio, get_speech_timestamps
+from custom_exceptions import VADSetupException, AudioStreamStartException, DeviceNotFoundException, InvalidGladiaKeyException
 
 
-class InvalidGladiaKeyException(Exception):
-    """Exception raised when the Gladia API key is invalid."""
-    def __init__(self, message="The provided Gladia API key is invalid."):
-        super().__init__(message)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(levelname)s:     %(asctime)s - %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+
+logger = logging.getLogger(__name__)
+for noisy_logger in ["urllib3", "torch", "pyaudio", "requests"]:
+    logging.getLogger(noisy_logger).setLevel(logging.ERROR)
+    
+
+class AudioDevice:
+    def __init__(self, index: int, name: str, sample_rate: int, max_channels: int):
+        self.index = index
+        self.name = name
+        self.sample_rate = sample_rate
+        self.max_channels = max_channels
+
+    def __str__(self):
+        return self.name
+
+    def __repr__(self):
+        return f"AudioDevice(name='{self.name}', index={self.index}, sample_rate={self.sample_rate}, max_channels={self.max_channels})"
 
 
-class DeviceNotFoundException(Exception):
-    """Exception raised when the specified USB device is not found."""
-    def __init__(self, device: str):
-        message = f"The device '{device}' was not found in the USB devices list."
-        super().__init__(message)
-
-def find_audio_device_info(device_name: str) -> dict:
+def get_device_info(device_name: str) -> AudioDevice:
     """Find audio device info by USB device name with fallback options"""
     p = pyaudio.PyAudio()
     
@@ -35,22 +49,22 @@ def find_audio_device_info(device_name: str) -> dict:
             device_info = p.get_device_info_by_index(i)
             if device_info['maxInputChannels'] > 0:  # Input device
                 if device_name.lower() in device_info['name'].lower():
-                    candidates.append({
-                        'index': i,
-                        'name': device_info['name'],
-                        'sample_rate': int(device_info['defaultSampleRate']),
-                        'max_channels': device_info['maxInputChannels']
-                    })
-        except:
+                    candidates.append(AudioDevice(
+                        index=i,
+                        name=device_info['name'],
+                        sample_rate=int(device_info['defaultSampleRate']),
+                        max_channels=device_info['maxInputChannels']
+                    ))
+        except Exception:
             continue
     
     p.terminate()
     
     if not candidates:
-        raise ValueError(f"No input audio device containing '{device_name}' found")
+        raise DeviceNotFoundException(device_name)
     
-    # Return the first candidate or the one with highest sample rate
-    return max(candidates, key=lambda x: x['sample_rate'])
+    return max(candidates, key=lambda x: x.sample_rate)
+
 
 def test_device_configuration(device_index: int, sample_rate: int, channels: int = 1) -> bool:
     """Test if device configuration is valid"""
@@ -70,9 +84,10 @@ def test_device_configuration(device_index: int, sample_rate: int, channels: int
         p.terminate()
         return False
 
+
 class RobustRealTimeVAD:
     def __init__(self, device_name: str, model, preferred_sample_rate=16000, chunk_size=1024):
-        self.device_info = find_audio_device_info(device_name)
+        self.device_info = get_device_info(device_name)
         self.model = model
         self.chunk_size = chunk_size
         self.audio_buffer = deque()
@@ -82,15 +97,12 @@ class RobustRealTimeVAD:
         self.sample_rate = None
         
         for rate in possible_rates:
-            if test_device_configuration(self.device_info['index'], rate):
+            if test_device_configuration(self.device_info.index, rate):
                 self.sample_rate = rate
                 break
         
         if self.sample_rate is None:
-            self.sample_rate = int(self.device_info['sample_rate'])
-            
-        print(f"Using device: {self.device_info['name']}")
-        print(f"Sample rate: {self.sample_rate} Hz")
+            self.sample_rate = int(self.device_info.sample_rate)
         
         # Adjust buffer size based on sample rate
         buffer_seconds = 3
@@ -105,25 +117,22 @@ class RobustRealTimeVAD:
                 channels=1,
                 rate=self.sample_rate,
                 input=True,
-                input_device_index=self.device_info['index'],
+                input_device_index=self.device_info.index,
                 frames_per_buffer=self.chunk_size,
                 stream_callback=self._audio_callback
             )
             self.stream.start_stream()
-            print("Audio stream started successfully")
             
         except Exception as e:
-            print(f"Error starting stream: {e}")
             self.p.terminate()
-            raise
-        
+            raise AudioStreamStartException(self.device_info.name, str(e)) from e
+
     def _audio_callback(self, in_data, frame_count, time_info, status):
         try:
             audio_data = np.frombuffer(in_data, dtype=np.int16)
             self.audio_buffer.extend(audio_data)
         except Exception as e:
-            print(f"Audio callback error: {e}")
-        
+            logger.error(f"Audio callback error: {e}")        
         return (in_data, pyaudio.paContinue)
     
     def detect_speech(self):
@@ -151,7 +160,7 @@ class RobustRealTimeVAD:
             return speech_timestamps
             
         except Exception as e:
-            print(f"VAD detection error: {e}")
+            logger.error(f"VAD detection error: {e}")
             return []
     
     def get_recent_audio(self, duration_seconds=2):
@@ -170,55 +179,42 @@ class RobustRealTimeVAD:
         if hasattr(self, 'p'):
             self.p.terminate()
 
+
 def list_audio_devices():
     """List all available audio input devices"""
     p = pyaudio.PyAudio()
-    print("\nAvailable audio input devices:")
-    
+    devices = []   
     for i in range(p.get_device_count()):
         try:
             device_info = p.get_device_info_by_index(i)
             if device_info['maxInputChannels'] > 0:
-                print(f"  {i}: {device_info['name']} (SR: {device_info['defaultSampleRate']})")
+                devices.append((i, device_info['name'], device_info['defaultSampleRate']))
         except:
             continue
     
     p.terminate()
+    return devices
 
 def setup_realtime_vad(device_name: str, model):
-    """Setup real-time VAD with error handling"""
+    """
+    Initialize and start real-time Voice Activity Detection (VAD) using a specified audio device.
+
+    Args:
+        device_name (str): Name or part of the name of the input audio device (e.g., "Logitech").
+        model (torch.nn.Module): Preloaded Silero VAD model used for speech detection.
+
+    Returns:
+        RobustRealTimeVAD: An instance of the VAD detector with the audio stream started.
+
+    Raises:
+        VADSetupException: If the device cannot be initialized or the stream cannot be started.
+    """
     try:
         vad_detector = RobustRealTimeVAD(device_name, model)
         vad_detector.start_stream()
         return vad_detector
     except Exception as e:
-        print(f"Failed to setup VAD: {e}")
-        return None
-
-def is_devices_exist(device: str) -> str:
-    """
-    Checks if a specific USB device exists using the `lsusb` command.
-
-    Args:
-        device (str): A substring to identify the USB device (e.g., "Logitech", "ID 046d").
-
-    Returns:
-        str: The device string if found.
-
-    Raises:
-        DeviceNotFoundException: If the device is not found in the `lsusb` output.
-        subprocess.SubprocessError: If the `lsusb` command fails to execute.
-    """
-    regex = r"bus (\d{3}) device (\d{3}): id ([0-9a-f]{4}:[0-9a-f]{0,4}) (.*)"
-    try:
-        result = subprocess.run(['lsusb'], capture_output=True, text=True, check=True)
-        matches = re.finditer(regex, result.stdout, re.MULTILINE | re.IGNORECASE)
-        for match in matches:
-            if device.lower() in match.group(4).lower():
-                return device
-        raise DeviceNotFoundException(device)
-    except subprocess.SubprocessError as e:
-        raise e
+        raise VADSetupException(f"Unable to start VAD on device '{device_name}': {e}") from e
 
 
 def is_gladia_key_valid(key: str, url: str = "https://api.gladia.io/v2/pre-recorded") -> str:
@@ -243,33 +239,62 @@ def is_gladia_key_valid(key: str, url: str = "https://api.gladia.io/v2/pre-recor
     return key
 
 
-def setup_realtime_vad(device_name: str, model):
-    """Setup real-time VAD with error handling"""
-    try:
-        vad_detector = RobustRealTimeVAD(device_name, model)
-        vad_detector.start_stream()
-        return vad_detector
-    except Exception as e:
-        print(f"Failed to setup VAD: {e}")
-        return None
-
-
-def main(allowed_languages: List[str] = ["auto", "fr", "en", "es", "de"]) -> None:
+def make_wss_state_tracker(silence_timeout_seconds: int = 90) -> Callable[[bool], bool]:
     """
-    Parses command-line arguments for agent and phone devices, languages, and Gladia API key.
+    Crée une fonction is_wss_open(is_speaking: bool) → bool
+    qui garde un état interne et applique la logique de silence.
+
+    :param silence_timeout_seconds: délai max de silence avant fermeture.
+    :return: fonction is_wss_open(is_speaking: bool) -> bool
+    """
+    wss_connection_active = False
+    silence_start_time = None
+
+    def is_wss_open(is_speaking: bool) -> bool:
+        nonlocal wss_connection_active, silence_start_time
+
+        if is_speaking:
+            if not wss_connection_active:
+                logger.info("Speech detected, opening WSS connection.")
+                wss_connection_active = True
+            silence_start_time = None
+        else:
+            if wss_connection_active and silence_start_time is None:
+                silence_start_time = time.time()
+            elif wss_connection_active and silence_start_time:
+                elapsed = time.time() - silence_start_time
+                if elapsed > silence_timeout_seconds:
+                    logger.info("Silence timeout reached, closing WSS connection.")
+                    wss_connection_active = False
+                    silence_start_time = None
+
+        logger.debug(f"Speaking: {int(is_speaking)}")
+        return wss_connection_active
+
+    return is_wss_open
+
+
+def main(*, allowed_languages: List[str] = ["auto", "fr", "en", "es", "de"],
+         load_model: object = load_silero_vad,
+         silence_timeout_seconds: int = 30) -> None:
+    """
+    Main entry point: parses CLI args, validates Gladia key, sets up VAD and monitors speech.
+
+    Args:
+        allowed_languages (List[str]): Supported language codes.
+        load_model (object): Function to load the Silero VAD model.
+        silence_timeout_seconds (int): Duration (in seconds) of continuous silence before taking action.
 
     Raises:
-        argparse.ArgumentTypeError: If any language or device input is invalid.
-        DeviceNotFoundException: If a USB device is not found.
+        DeviceNotFoundException: If the specified USB device is not found.
         InvalidGladiaKeyException: If the Gladia API key is invalid.
     """
-   
     parser = argparse.ArgumentParser()
 
-    parser.add_argument("-ad", "--agent-device", type=is_devices_exist, help="USB device name for agent mic (e.g., 'Logitech').")
-    parser.add_argument("-ag", "--agent-language", choices=allowed_languages, default="auto", help="Language spoken by the agent (default: auto).")
-    parser.add_argument("-pd", "--phone-device", type=is_devices_exist, help="USB device name for phone mic.")
-    parser.add_argument("-pl", "--phone-language", choices=allowed_languages, default="auto", help="Language spoken by the phone (default: auto).")
+    parser.add_argument("-ad", "--agent-device", type=get_device_info, help="USB device name for agent mic (e.g., 'Logitech').")
+    parser.add_argument("-ag", "--agent-language", choices=allowed_languages, default="auto", help="Language spoken by the agent.")
+    parser.add_argument("-pd", "--phone-device", type=get_device_info, help="USB device name for phone mic.")
+    parser.add_argument("-pl", "--phone-language", choices=allowed_languages, default="auto", help="Language spoken by the phone.")
     parser.add_argument("-gk", "--gladia-key", type=str, help="Gladia API key. If omitted, will try the 'GLADIA_KEY' environment variable.")
 
     args = parser.parse_args()
@@ -277,47 +302,26 @@ def main(allowed_languages: List[str] = ["auto", "fr", "en", "es", "de"]) -> Non
     gladia_key = args.gladia_key or os.getenv("GLADIA_API_KEY")
     gladia_key = is_gladia_key_valid(gladia_key)
 
-    print(args.gladia_key, args.agent_device)
+    model = load_model()
+    vad_detector = setup_realtime_vad(args.agent_device.name, model)
+    is_wss_open = make_wss_state_tracker(silence_timeout_seconds)
+
     try:
-        device_name = args.agent_device  # Déjà validé par is_devices_exist
-        vad_detector = setup_realtime_vad(device_name)
-        
         while True:
             speech_segments = vad_detector.detect_speech()
-            if speech_segments:
-                print(f"Speech detected: {speech_segments}")
-                # Process speech segments here
-                
+            is_speaking = bool(speech_segments)
+
+            if is_wss_open(is_speaking):
+                pass
+
+            time.sleep(0.1)
+
     except KeyboardInterrupt:
-        vad_detector.stream.stop_stream()
-        vad_detector.stream.close()
-        vad_detector.p.terminate()
+        pass
+    finally:
+        vad_detector.stop_stream()
+        logger.info("Audio stream terminated.")
+
 
 if __name__ == "__main__":
-    from silero_vad import load_silero_vad, get_speech_timestamps
-    
-    # List available devices first
-    list_audio_devices()
-    
-    # Load VAD model
-    model = load_silero_vad()
-    
-    # Setup with your device
-    device_name = "CM477-30757"  # Replace with actual device
-    vad_detector = setup_realtime_vad(device_name, model)
-    
-    if vad_detector:
-        try:
-            print("Listening for speech... Press Ctrl+C to stop")
-            
-            while True:
-                speech_segments = vad_detector.detect_speech()
-                if speech_segments:
-                    print(f"Speech detected: {speech_segments}")
-                
-                time.sleep(0.1)  # Small delay
-                
-        except KeyboardInterrupt:
-            print("Stopping...")
-        finally:
-            vad_detector.stop_stream()
+    main()
