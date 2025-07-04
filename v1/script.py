@@ -198,12 +198,10 @@ class AudioBuffer:
         return None
 
     def get_buffer_size(self) -> int:
-        """Retourne la taille actuelle du buffer"""
         with self.lock:
             return len(self.data)
 
     def stop_stream(self):
-        """Arrête le stream audio"""
         if hasattr(self, 'stream') and self.stream:
             self.stream.stop_stream()
             self.stream.close()
@@ -249,62 +247,11 @@ def is_gladia_key_valid(key: str, url: str = "https://api.gladia.io/v2/pre-recor
     return key
 
 
-def make_wss_state_tracker(silence_timeout_seconds: int = 90) -> Callable[[bool], bool]:
-    """
-    Crée une fonction is_wss_open(is_speaking: bool) → bool
-    qui garde un état interne et applique la logique de silence.
-
-    :param silence_timeout_seconds: délai max de silence avant fermeture.
-    :return: fonction is_wss_open(is_speaking: bool) -> bool
-    """
-    wss_connection_active = False
-    silence_start_time = None
-
-    def is_wss_open(is_speaking: bool) -> bool:
-        nonlocal wss_connection_active, silence_start_time
-
-        if is_speaking:
-            if not wss_connection_active:
-                logger.info("Speech detected, opening WSS connection.")
-                wss_connection_active = True
-            silence_start_time = None
-        else:
-            if wss_connection_active and silence_start_time is None:
-                silence_start_time = time.time()
-            elif wss_connection_active and silence_start_time:
-                elapsed = time.time() - silence_start_time
-                if elapsed > silence_timeout_seconds:
-                    logger.info("Silence timeout reached, closing WSS connection.")
-                    wss_connection_active = False
-                    silence_start_time = None
-
-        logger.debug(f"Speaking: {int(is_speaking)}")
-        return wss_connection_active
-
-    return is_wss_open
-
-
-async def init_live_session(config: StreamingConfiguration, gladia_key: str) -> InitiateResponse:
-    async with aiohttp.ClientSession() as session:
-        async with session.post(
-            "https://api.gladia.io/v2/live",
-            headers={"X-Gladia-Key": gladia_key},
-            json=config,
-            timeout=3
-        ) as response:
-            if response.status not in  (200, 201):
-                text = await response.text()
-                logger.error(f"{response.status}: {text or response.reason}")
-                exit(response.status)
-            return await response.json()
-        
-
-P = pyaudio.PyAudio()
-
 CHANNELS = 1
 
 FRAMES_PER_BUFFER = 3200
 SAMPLE_RATE = 16_000
+
 
 STREAMING_CONFIGURATION: StreamingConfiguration = {
     "encoding": "wav/pcm",
@@ -318,39 +265,8 @@ STREAMING_CONFIGURATION: StreamingConfiguration = {
 }
 
 
-
-class WebSocket:
-    def __init__(self, gladia_key: str, config):
-        self.gladia_key = gladia_key
-        self.config = config
-        
-        self.is_created: bool = False
-        self.socket: Optional[ClientConnection] = None
-
-    async def create(self):
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                "https://api.gladia.io/v2/live",
-                headers={"X-Gladia-Key": self.gladia_key},
-                json=config,
-                timeout=3
-            ) as response:
-                if not response.status.ok:
-                    text = await response.text()
-                    logger.error(f"{response.status}: {text or response.reason}")
-                    exit(response.status)
-                return await response.json()
-
-    async def stop(self) -> None:
-        if self.socket:
-            await self.socket.send(json.dumps({"type:": "stop_recording"}))
-            await asyncio.sleep(0)
-        self.socket = None
-        self.is_created = False
-
-
-
 def format_duration(seconds: float) -> str:
+    """Formate une durée en secondes vers le format HH:MM:SS.mmm"""
     milliseconds = int(seconds * 1_000)
     return datetime.time(
         hour=milliseconds // 3_600_000,
@@ -360,17 +276,114 @@ def format_duration(seconds: float) -> str:
     ).isoformat(timespec="milliseconds")
 
 
-async def print_messages_from_socket(socket: ClientConnection) -> None:
-    async for message in socket:
-        content = json.loads(message)
-        if content["type"] == "transcript" and content["data"]["is_final"]:
-            start = format_duration(content["data"]["utterance"]["start"])
-            end = format_duration(content["data"]["utterance"]["end"])
-            text = content["data"]["utterance"]["text"].strip()
-            print(f"{start} --> {end} | {text}")
-        if content["type"] == "post_final_transcript":
-            print("\n################ End of session ################\n")
-            print(json.dumps(content, indent=2, ensure_ascii=False))
+class WebSocket:
+    def __init__(self, gladia_key: str, config):
+        self.gladia_key = gladia_key
+        self.config = config
+        
+        self.socket: Optional[ClientConnection] = None
+
+    async def create(self) -> None:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://api.gladia.io/v2/live",
+                headers={"X-Gladia-Key": self.gladia_key},
+                json=self.config,
+                timeout=3
+            ) as response:
+                if not response.ok:
+                    text = await response.text()
+                    logger.error(f"{response.status}: {text or response.reason}")
+                    exit(response.status)
+                response = await response.json()
+                self.socket = await connect(response["url"])
+
+    async def stop(self) -> None:
+        if self.socket:
+            await self.socket.send(json.dumps({"type:": "stop_recording"}))
+            await asyncio.sleep(0)
+        self.socket = None
+
+    async def send_audio_chunk(self, audio_buffer: AudioBuffer, 
+                               chunk_size_duration_ms: int = 300) -> bool:
+        """
+        Envoie un chunk audio du buffer via WebSocket
+        
+        Args:
+            socket: Connexion WebSocket
+            audio_buffer: Instance de AudioBuffer
+            chunk_size: Taille du chunk à envoyer (en échantillons)
+            
+        Returns:
+            bool: True si un chunk a été envoyé, False sinon
+        """
+        chunk_size = int(audio_buffer.sample_rate * chunk_size_duration_ms / 1000)
+        chunk_data = audio_buffer.get_chunk(chunk_size)
+        
+        if chunk_data is not None:
+            # Encoder en base64 pour l'envoi JSON
+            encoded_data = base64.b64encode(chunk_data).decode("utf-8")
+            
+            # Préparer le message JSON
+            json_data = json.dumps({
+                "type": "audio_chunk", 
+                "data": {
+                    "chunk": str(encoded_data),
+                    "sample_rate": audio_buffer.sample_rate,
+                    "chunk_size": len(chunk_data)
+                }
+            })
+
+            if self.socket:
+                # Envoyer via WebSocket
+                await self.socket.send(json_data)
+                return True
+        
+        return False
+    async def display_messages(self) -> None:
+        """
+        Affiche les messages reçus du WebSocket en temps réel
+        """
+        if not self.socket:
+            print("Erreur: WebSocket non connecté")
+            return
+            
+        try:
+            async for message in self.socket:
+                content = json.loads(message)
+                
+                # Afficher les transcriptions finales
+                if content["type"] == "transcript" and content["data"]["is_final"]:
+                    start = format_duration(content["data"]["utterance"]["start"])
+                    end = format_duration(content["data"]["utterance"]["end"])
+                    text = content["data"]["utterance"]["text"].strip()
+                    print(f"{start} --> {end} | {text}")
+                
+                # Afficher les transcriptions intermédiaires (optionnel)
+                elif content["type"] == "transcript" and not content["data"]["is_final"]:
+                    text = content["data"]["utterance"]["text"].strip()
+                    print(f"[En cours] {text}", end='\r')  # Écrasement de ligne
+                
+                # Afficher la transcription finale de fin de session
+                elif content["type"] == "post_final_transcript":
+                    print("\n################ End of session ################\n")
+                    print(json.dumps(content, indent=2, ensure_ascii=False))
+                    break
+                    
+                # Gérer d'autres types de messages si nécessaire
+                elif content["type"] == "error":
+                    print(f"Erreur: {content.get('message', 'Erreur inconnue')}")
+                    
+        except ConnectionClosedOK:
+            print("Connexion WebSocket fermée proprement")
+        except Exception as e:
+            print(f"Erreur lors de la lecture des messages: {e}")
+
+    async def listen_for_messages(self) -> None:
+        """
+        Version non-bloquante pour écouter les messages en arrière-plan
+        """
+        await self.display_messages()
 
 
 class WSSessionManager:
@@ -663,19 +676,34 @@ async def main(*, allowed_languages: List[str] = ["auto", "fr", "en", "es", "de"
     #  wss_manager = WSSessionManager(gladia_key, silence_timeout_seconds)
     #  vad_detector = setup_realtime_vad(args.agent_device.name, model)
     #  wss_manager = WSSessionManager(STREAMING_CONFIGURATION, gladia_key, silence_timeout_seconds)
-    websocket = None
-    timer = None
-
+    websocket = WebSocket(gladia_key, STREAMING_CONFIGURATION)
+    
     try:
         while True:
             is_speaking = detect_speech(audio_buffer, vad_model)
+            if websocket.is_new_message():
+                print(websocket.new_message)
             print(f'\r{int(is_speaking)}', end='')
-            await asyncio.sleep(0.1)
             
+            if websocket.socket:
+                logger.info('going to send data')
+                if await websocket.send_audio_chunk(audio_buffer):
+                    logger.info(audio_buffer.get_buffer_size())
+                
+            else: 
+                logger.info('create session')
+                await websocket.create()
+                message_task = asyncio.create_task(websocket.listen_for_messages())
+                logger.info('session created')
+                
+            await asyncio.sleep(0.1)
+        
     except KeyboardInterrupt:
-        print("\n🔴 Arrêt demandé par l'utilisateur")
+        pass
     finally:
         #  await wss_manager.cleanup()
+        await websocket.listen_for_messages()
+        await websocket.stop()
         audio_buffer.stop_stream()
 
 
