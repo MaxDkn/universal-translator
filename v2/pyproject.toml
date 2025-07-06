@@ -1,0 +1,12 @@
+[project]
+name = "universal-translator"
+version = "0.1.0"
+
+dependencies = [
+    "requests",
+    "websockets",
+    "pyaudio",
+    "torch",
+    "numpy",
+    "silero-vad"
+]
