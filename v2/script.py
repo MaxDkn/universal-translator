@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 import torch
 import pyaudio
 import requests
+import edge_tts
 import numpy as np
 from websockets.exceptions import ConnectionClosedOK
 from websockets.asyncio.client import ClientConnection, connect
@@ -618,9 +619,39 @@ class GladiaAudioManager:
         self.vad_controller.stop_monitoring()
         self.audio_capture.cleanup()
 
+def get_audio_devices():
+    p = pyaudio.PyAudio()
+    input_devices = []
+    output_devices = []
+    
+    for i in range(p.get_device_count()):
+        info = p.get_device_info_by_index(i)
+        if int(info['maxInputChannels']) > 0:
+            input_devices.append(AudioDevice(
+                index=i,
+                name=str(info['name']),
+                sample_rate=int(info['defaultSampleRate']),
+                max_channels=int(info['maxInputChannels'])
+            ))
+        if int(info['maxOutputChannels']) > 0:
+            output_devices.append(AudioDevice(
+                index=i,
+                name=str(info['name']),
+                sample_rate=int(info['defaultSampleRate']),
+                max_channels=int(info['maxOutputChannels'])
+            ))
+    
+    p.terminate()
+    
+    return input_devices, output_devices
+
 async def main(allowed_languages: List[str] = ["auto", "fr", "en", "es", "de"], silence_timeout: float = 30.0, prebuffer_seconds: float = 3.0, debug: bool = False):
     parser = argparse.ArgumentParser()
 
+    parser.add_argument("--agent-device",   type=get_device_info,      help="USB device name for agent mic (e.g., 'Logitech').")
+    parser.add_argument("--agent-language", choices=allowed_languages, default="auto", help="Language spoken by the agent.")
+    parser.add_argument("--phone-device",   type=get_device_info,      help="USB device name for phone mic.")
+    parser.add_argument("--phone-language", choices=allowed_languages, default="auto", help="Language spoken by the phone.")
     parser.add_argument("--gladia-key",     type=str,                  help="Gladia API key. If omitted, will try the 'GLADIA_KEY' environment variable.")
 
     args = parser.parse_args()
@@ -646,9 +677,15 @@ async def main(allowed_languages: List[str] = ["auto", "fr", "en", "es", "de"], 
         manager.cleanup()
         logger.info("Goodbye!")
 
+async def synthesize_text():
+    text = """Bonjour Max, j'espère que ta journée se passe bien. Aujourd'hui, nous allons tester la synthèse vocale avec une voix masculine."""
+    voice = "fr-FR-DenisNeural"
+    communicate = edge_tts.Communicate(text=text, voice=voice)
+    await communicate.save("output.mp3")
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
+        #  asyncio.run(synthesize_text())
     except Exception as e:
         print(f"Erreur inattendue: {e}")
