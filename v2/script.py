@@ -1,4 +1,5 @@
 import os
+import io
 import json
 import time
 import queue
@@ -528,7 +529,6 @@ class AudioPlayback:
             logger.warning(f"Error terminating PyAudio playback: {e}")
 
 
-
 class TranscriptionService:
     def __init__(self, audio_capture: AudioCapture, gladia_key: str, agent_language: str = "fr", target_language: str = "en"):
         self.audio_capture = audio_capture
@@ -861,13 +861,57 @@ class VADTranscriptionController:
                 'is_transcribing': self.transcription_service.is_transcribing
             }
 
+class TTSService:
+    def __init__(self, playback_buffer: SharedAudioPlaybackBuffer, voice: str = "fr-FR-DenisNeural"):
+        self.playback_buffer = playback_buffer
+        self.voice = voice
+        
+    async def synthesize_and_queue_direct(self, text: str):
+        """Synthétise et stream directement chunk par chunk"""
+        if not text.strip():
+            return
+            
+        try:
+            communicate = edge_tts.Communicate(text=text, voice=self.voice)
+            
+            audio_buffer = io.BytesIO()
+            
+            # Stream les chunks audio au fur et à mesure
+            async for chunk in communicate.stream():
+                if chunk["type"] == "audio":
+                    # Accumuler un peu d'audio avant de convertir
+                    audio_buffer.write(chunk["data"])
+                    
+                    # Quand on a assez de données, convertir et jouer
+                    if audio_buffer.tell() > 8192:  # Seuil arbitraire
+                        audio_buffer.seek(0)
+                        converted_audio = self._convert_audio_format(audio_buffer.getvalue())
+                        if converted_audio:
+                            self._queue_audio_chunks(converted_audio)
+                        
+                        # Reset du buffer
+                        audio_buffer = io.BytesIO()
+            
+            # Traiter le reste du buffer
+            if audio_buffer.tell() > 0:
+                audio_buffer.seek(0)
+                converted_audio = self._convert_audio_format(audio_buffer.getvalue())
+                if converted_audio:
+                    self._queue_audio_chunks(converted_audio)
+                    
+            logger.info(f"TTS streaming completed: {text[:50]}...")
+            
+        except Exception as e:
+            logger.error(f"Error in TTS streaming: {e}")
+
+
 class GladiaAudioManager:
     def __init__(self, gladia_key: str, 
                  agent_device: AudioCapture,
                  agent_language: str = "fr",
                  target_device: AudioCapture | None = None,
                  target_language: Optional[str] = "en",
-                 silence_timeout: float = 30.0, prebuffer_seconds: float = 3.0):
+                 silence_timeout: float = 30.0, prebuffer_seconds: float = 5.5):
 
         self.audio_buffer = SharedAudioBuffer(prebuffer_seconds=prebuffer_seconds)
         self.audio_capture = AudioCapture(self.audio_buffer, agent_device)

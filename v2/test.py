@@ -1,198 +1,240 @@
-import os
-import json
+import io
 import asyncio
 import logging
-import requests
 import pyaudio
-import base64
+import edge_tts
+from pydub import AudioSegment
+import threading
+import queue
 import time
-from websockets.asyncio.client import connect
+import os
 
-# Configuration du logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-class TranscriptionTester:
-    def __init__(self, gladia_key: str):
-        self.gladia_key = gladia_key
-        self.SAMPLE_RATE = 16000
-        self.CHANNELS = 1
+class DirectAudioPlayer:
+    def __init__(self):
+        self.p = pyaudio.PyAudio()
+        self.stream = None
+        self.audio_queue = queue.Queue()
+        self.is_playing = False
+        self.play_thread = None
+        
+        # Configuration audio plus compatible
+        self.SAMPLE_RATE = 22050  # Plus compatible que 44100
+        self.CHANNELS = 1         # Mono plus stable
         self.FORMAT = pyaudio.paInt16
-        self.FRAMES_PER_BUFFER = 3200
+
+    def list_audio_devices(self):
+        """Liste les périphériques audio disponibles"""
+        print("\n=== Périphériques Audio Disponibles ===")
+        for i in range(self.p.get_device_count()):
+            try:
+                info = self.p.get_device_info_by_index(i)
+                if info['maxOutputChannels'] > 0:
+                    print(f"[{i}] {info['name']} - {info['maxOutputChannels']} canaux - {info['defaultSampleRate']} Hz")
+            except:
+                continue
         
-        # Configuration avec traduction français -> anglais
-        self.STREAMING_CONFIG = {
-            "encoding": "wav/pcm",
-            "sample_rate": self.SAMPLE_RATE,
-            "bit_depth": 16,
-            "channels": self.CHANNELS,
-            "language_config": {
-                "languages": ["fr"],  # Source: français
-                "code_switching": False,
-            },
-            "realtime_processing": {
-                "translation": True,
-                "translation_config": {
-                    "target_languages": ["en"],
-                    "model": "enhanced",  # Changé de "base" à "fast"
-                    "match_original_utterances": True,
-                    "lipsync": True,
-                    "context_adaptation": True,
-                    "context": "General conversation",
-                    "informal": False
-                }
+    def find_best_output_device(self):
+        """Trouve le meilleur périphérique de sortie"""
+        try:
+            # Essayer le périphérique par défaut
+            default_info = self.p.get_default_output_device_info()
+            return default_info['index']
+        except:
+            # Chercher un périphérique qui fonctionne
+            for i in range(self.p.get_device_count()):
+                try:
+                    info = self.p.get_device_info_by_index(i)
+                    if info['maxOutputChannels'] > 0:
+                        # Tester si on peut ouvrir ce périphérique
+                        test_stream = self.p.open(
+                            format=self.FORMAT,
+                            channels=1,
+                            rate=22050,
+                            output=True,
+                            output_device_index=i,
+                            frames_per_buffer=512
+                        )
+                        test_stream.close()
+                        return i
+                except:
+                    continue
+        return None
+        
+    def start_playback(self):
+        """Démarre la lecture audio avec détection automatique"""
+        if self.is_playing:
+            return
+            
+        self.list_audio_devices()
+        device_index = self.find_best_output_device()
+        
+        if device_index is None:
+            logger.error("Aucun périphérique audio trouvé")
+            return False
+            
+        try:
+            config = {
+                'format': self.FORMAT,
+                'channels': self.CHANNELS,
+                'rate': self.SAMPLE_RATE,
+                'output': True,
+                'frames_per_buffer': 512,
+                'output_device_index': device_index
             }
-        }
-    
-    def init_session(self):
-        """Initialise une session de transcription live"""
-        response = requests.post(
-            "https://api.gladia.io/v2/live",
-            headers={"X-Gladia-Key": self.gladia_key},
-            json=self.STREAMING_CONFIG,
-            timeout=10
-        )
+            
+            self.stream = self.p.open(**config)
+            
+            self.is_playing = True
+            self.play_thread = threading.Thread(target=self._playback_loop)
+            self.play_thread.daemon = True
+            self.play_thread.start()
+            
+            device_name = self.p.get_device_info_by_index(device_index)['name']
+            logger.info(f"✓ Lecture audio démarrée sur: {device_name}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Erreur ouverture stream audio: {e}")
+            return False
+            
+    def stop_playback(self):
+        """Arrête la lecture audio"""
+        self.is_playing = False
         
-        if not response.ok:
-            raise Exception(f"Erreur API: {response.status_code} - {response.text}")
+        if self.play_thread:
+            self.play_thread.join(timeout=2)
+            
+        if self.stream:
+            try:
+                self.stream.stop_stream()
+                self.stream.close()
+            except:
+                pass
+            
+        logger.info("Lecture audio arrêtée")
         
-        return response.json()
-    
-    async def test_transcription(self, duration_seconds: int = 10):
-        """Test la transcription avec traduction pendant X secondes"""
-        print(f"🎤 Démarrage du test de transcription (français -> anglais)")
-        print(f"📢 Parlez en français pendant {duration_seconds} secondes...")
+    def add_audio_chunk(self, audio_data: bytes):
+        """Ajoute un chunk audio à la queue de lecture"""
+        try:
+            self.audio_queue.put(audio_data, timeout=1)
+        except queue.Full:
+            logger.warning("Queue audio pleine, chunk ignoré")
+            
+    def _playback_loop(self):
+        """Boucle de lecture audio"""
+        while self.is_playing:
+            try:
+                audio_data = self.audio_queue.get(timeout=0.1)
+                if self.stream and len(audio_data) > 0:
+                    self.stream.write(audio_data)
+            except queue.Empty:
+                continue
+            except Exception as e:
+                logger.error(f"Erreur lecture audio: {e}")
+                break
+                
+    def cleanup(self):
+        self.stop_playback()
+        self.p.terminate()
+
+class TTSService:
+    def __init__(self, audio_player: DirectAudioPlayer, voice: str = "en-US-AriaNeural"):
+        self.audio_player = audio_player
+        self.voice = voice
         
-        # Initialise la session
-        session_data = self.init_session()
-        websocket_url = session_data["url"]
-        
-        # Initialise PyAudio
-        p = pyaudio.PyAudio()
-        stream = p.open(
-            format=self.FORMAT,
-            channels=self.CHANNELS,
-            rate=self.SAMPLE_RATE,
-            input=True,
-            frames_per_buffer=self.FRAMES_PER_BUFFER
-        )
+    async def synthesize_and_play(self, text: str):
+        """Synthétise le texte et le joue directement"""
+        if not text.strip():
+            return
+            
+        logger.info(f"Synthèse [{self.voice}]: {text}")
         
         try:
-            async with connect(websocket_url) as websocket:
-                print("✅ Connexion WebSocket établie")
+            communicate = edge_tts.Communicate(text=text, voice=self.voice)
+            
+            # Récupérer tout l'audio d'abord
+            audio_data = b""
+            async for chunk in communicate.stream():
+                if chunk["type"] == "audio":
+                    audio_data += chunk["data"]
+            
+            if not audio_data:
+                logger.error("Aucun audio reçu d'Edge TTS")
+                return
                 
-                # Enregistre et envoie l'audio
-                start_time = time.time()
-                while time.time() - start_time < duration_seconds:
-                    # Lit l'audio du micro
-                    audio_data = stream.read(self.FRAMES_PER_BUFFER, exception_on_overflow=False)
-                    
-                    # Encode en base64 et envoie
-                    audio_b64 = base64.b64encode(audio_data).decode('utf-8')
-                    message = {
-                        "type": "audio_chunk",
-                        "data": {"chunk": audio_b64}
-                    }
-                    
-                    await websocket.send(json.dumps(message))
-                    
-                    # Vérifie les messages reçus
-                    try:
-                        response = await asyncio.wait_for(websocket.recv(), timeout=0.01)
-                        content = json.loads(response)
-                        
-                        if content["type"] == "transcript":
-                            data = content["data"]
-                            print(f"📋 DEBUG - Données reçues: {json.dumps(data, indent=2)}")
-                            
-                            if data.get("is_final", False):
-                                original_text = data["utterance"]["text"]
-                                print(f"🇫🇷 Original (FR): {original_text}")
-                                
-                                # Debug: affiche toute la structure
-                                print(f"🔍 Structure complète: {json.dumps(data, indent=2)}")
-                                
-                                # Cherche la traduction
-                                if "translation" in data:
-                                    translation = data["translation"]
-                                    print(f"📋 Traductions disponibles: {list(translation.keys())}")
-                                    if "en" in translation:
-                                        translated_text = translation["en"]["text"]
-                                        print(f"🇺🇸 Traduit (EN): {translated_text}")
-                                    else:
-                                        print("❌ Pas de traduction 'en' trouvée")
-                                else:
-                                    print("❌ Pas de champ 'translation' dans les données")
-                                print("-" * 50)
-                                    
-                    except asyncio.TimeoutError:
-                        pass
-                    
-                    await asyncio.sleep(0.01)
+            # Convertir et jouer
+            converted_audio = self._convert_audio_format(audio_data)
+            if converted_audio:
+                self._queue_audio_chunks(converted_audio)
+                logger.info("Synthèse terminée")
+            else:
+                logger.error("Échec de conversion audio")
                 
-                # Signal de fin d'enregistrement
-                await websocket.send(json.dumps({"type": "stop_recording"}))
-                print("🛑 Fin de l'enregistrement")
-                
-                # Attend les derniers résultats
-                print("⏳ Traitement des derniers résultats...")
-                try:
-                    while True:
-                        response = await asyncio.wait_for(websocket.recv(), timeout=3.0)
-                        content = json.loads(response)
-                        
-                        if content["type"] == "transcript":
-                            data = content["data"]
-                            if data.get("is_final", False):
-                                original_text = data["utterance"]["text"]
-                                print(f"🇫🇷 Final (FR): {original_text}")
-                                
-                                if "translation" in data and "en" in data["translation"]:
-                                    translated_text = data["translation"]["en"]["text"]
-                                    print(f"🇺🇸 Final (EN): {translated_text}")
-                        
-                        elif content["type"] == "post_final_transcript":
-                            print("✅ Transcription terminée")
-                            break
-                            
-                except asyncio.TimeoutError:
-                    print("⚠️  Timeout atteint, fin du traitement")
-        
-        finally:
-            stream.stop_stream()
-            stream.close()
-            p.terminate()
+        except Exception as e:
+            logger.error(f"Erreur synthèse TTS: {e}")
+    
+    def _convert_audio_format(self, audio_data: bytes) -> bytes:
+        """Convertit l'audio au format PyAudio"""
+        try:
+            # Edge TTS produit du MP3
+            audio_segment = AudioSegment.from_mp3(io.BytesIO(audio_data))
+            
+            # Convertir au format de notre player (mono, 22050 Hz)
+            audio_segment = audio_segment.set_frame_rate(self.audio_player.SAMPLE_RATE)
+            audio_segment = audio_segment.set_channels(self.audio_player.CHANNELS)
+            audio_segment = audio_segment.set_sample_width(2)  # 16-bit
+            
+            return audio_segment.raw_data
+            
+        except Exception as e:
+            logger.error(f"Erreur conversion audio: {e}")
+            return b''
+    
+    def _queue_audio_chunks(self, audio_data: bytes, chunk_size: int = 1024):
+        """Découpe et envoie l'audio au player"""
+        try:
+            for i in range(0, len(audio_data), chunk_size):
+                chunk = audio_data[i:i + chunk_size]
+                if len(chunk) > 0:
+                    self.audio_player.add_audio_chunk(chunk)
+        except Exception as e:
+            logger.error(f"Erreur découpe audio: {e}")
 
-def main():
-    # Récupère la clé API
-    gladia_key = os.getenv("GLADIA_API_KEY")
-    if not gladia_key:
-        print("❌ Erreur: Variable d'environnement GLADIA_API_KEY non définie")
-        return
+
+async def interactive_mode():
+    """Mode interactif avec voix fonctionnelle"""
+    print("\n=== Mode Interactif (Anglais) ===")
+    print("Tapez du texte en anglais (q pour quitter)")
     
-    # Teste la clé
-    try:
-        response = requests.get(
-            "https://api.gladia.io/v2/pre-recorded",
-            headers={"x-gladia-key": gladia_key}
-        )
-        if not response.ok:
-            print("❌ Erreur: Clé API Gladia invalide")
-            return
-        print("✅ Clé API Gladia valide")
-    except Exception as e:
-        print(f"❌ Erreur de validation de la clé: {e}")
+    audio_player = DirectAudioPlayer()
+    if not audio_player.start_playback():
+        print("❌ Impossible de démarrer l'audio")
         return
-    
-    # Lance le test
-    tester = TranscriptionTester(gladia_key)
+        
+    tts_service = TTSService(audio_player, voice="en-US-JennyNeural")
     
     try:
-        asyncio.run(tester.test_transcription(duration_seconds=15))
+        while True:
+            text = input("\n> ")
+            
+            if text.lower() in ['q', 'quit', 'exit']:
+                break
+                
+            if text.strip():
+                await tts_service.synthesize_and_play(text)
+                
     except KeyboardInterrupt:
-        print("\n🛑 Test interrompu par l'utilisateur")
-    except Exception as e:
-        print(f"❌ Erreur pendant le test: {e}")
+        print("\nMode interactif arrêté")
+    finally:
+        audio_player.cleanup()
 
 if __name__ == "__main__":
-    main()
+    async def main():
+        try:
+            await interactive_mode()            
+        except Exception as e:
+            print(f"Erreur: {e}")
+            
+    asyncio.run(main())
