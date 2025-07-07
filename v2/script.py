@@ -19,6 +19,7 @@ import pyaudio
 import requests
 import edge_tts
 import numpy as np
+from pydub import AudioSegment
 from websockets.exceptions import ConnectionClosedOK
 from websockets.asyncio.client import ClientConnection, connect
 from silero_vad import get_speech_timestamps, load_silero_vad
@@ -138,6 +139,33 @@ def get_device_info(device_name: str) -> AudioDevice:
                         name=str(device_info['name']),
                         sample_rate=int(device_info['defaultSampleRate']),
                         max_channels=int(device_info['maxInputChannels'])
+                    ))
+        except Exception:
+            continue
+    
+    p.terminate()
+    
+    if not candidates:
+        raise DeviceNotFoundException(device_name)
+    
+    return max(candidates, key=lambda x: x.sample_rate)
+
+def get_output_device_info(device_name: str) -> AudioDevice:
+    """Find audio output device info by USB device name"""
+    p = pyaudio.PyAudio()
+    
+    candidates = []
+    
+    for i in range(p.get_device_count()):
+        try:
+            device_info = p.get_device_info_by_index(i)
+            if int(device_info['maxOutputChannels']) > 0:  # Output device
+                if device_name.lower() in str(device_info['name']).lower():
+                    candidates.append(AudioDevice(
+                        index=i,
+                        name=str(device_info['name']),
+                        sample_rate=int(device_info['defaultSampleRate']),
+                        max_channels=int(device_info['maxOutputChannels'])
                     ))
         except Exception:
             continue
@@ -438,7 +466,7 @@ class AudioCapture:
             logger.warning(f"Error terminating PyAudio: {e}")
 
 class AudioPlayback:
-    def __init__(self, buffer: 'SharedAudioPlaybackBuffer', device: AudioDevice = None):
+    def __init__(self, buffer: SharedAudioPlaybackBuffer, device: AudioDevice = None):
         self.buffer = buffer
         self.device = device
         self.p = pyaudio.PyAudio()
@@ -446,14 +474,90 @@ class AudioPlayback:
         self.is_playing = False
         self.thread = None
         
-        # Configuration audio pour la lecture
-        self.CHANNELS = 2  # Stéréo pour la sortie
+        # Configuration audio de base
+        self.CHANNELS = 1  # Mono pour Edge-TTS
         self.FORMAT = pyaudio.paInt16
-        self.SAMPLE_RATE = 44100  # Standard pour la lecture
-        self.FRAMES_PER_BUFFER = 1024
+        self.FRAMES_PER_BUFFER = 512
         
+        # Déterminer le meilleur sample rate pour le device
         if self.device:
+            self.SAMPLE_RATE = self._find_best_output_sample_rate()
             logger.info(f"Using output device: {self.device.name}")
+            logger.info(f"Selected output sample rate: {self.SAMPLE_RATE} Hz")
+        else:
+            # Fallback si pas de device spécifié
+            self.SAMPLE_RATE = self._find_best_output_sample_rate_auto()
+            logger.info(f"Using default output device with sample rate: {self.SAMPLE_RATE} Hz")
+    
+    def _find_best_output_sample_rate(self):
+        """Trouve le meilleur taux d'échantillonnage supporté par le device de sortie"""
+        # Taux préférés dans l'ordre de préférence
+        # 22050 est idéal pour Edge-TTS, mais on teste d'autres aussi
+        preferred_rates = [22050, 44100, 48000, 16000, 24000, 32000, 8000]
+        
+        # D'abord, essayer le taux par défaut du device
+        device_rate = int(self.device.sample_rate)
+        if self._test_output_sample_rate(device_rate, self.device.index):
+            logger.debug(f"Device default rate {device_rate} Hz is supported")
+            # Si c'est un taux standard, l'utiliser
+            if device_rate in preferred_rates or device_rate > 8000:
+                return device_rate
+        
+        # Ensuite, tester les taux préférés
+        for rate in preferred_rates:
+            if self._test_output_sample_rate(rate, self.device.index):
+                logger.debug(f"Found supported rate: {rate} Hz")
+                return rate
+        
+        # Si aucun taux préféré n'est supporté, utiliser le taux par défaut
+        logger.warning(f"No preferred sample rate found, using device default: {device_rate} Hz")
+        return device_rate
+    
+    def _find_best_output_sample_rate_auto(self):
+        """Trouve automatiquement un taux d'échantillonnage pour le device par défaut"""
+        preferred_rates = [22050, 44100, 48000, 16000, 24000, 32000]
+        
+        try:
+            default_device = self.p.get_default_output_device_info()
+            device_index = default_device['index']
+            device_rate = int(default_device['defaultSampleRate'])
+            
+            # Tester le taux par défaut
+            if self._test_output_sample_rate(device_rate, device_index):
+                return device_rate
+        except:
+            device_index = self._get_first_output_device()
+        
+        # Tester les taux préférés
+        for rate in preferred_rates:
+            if self._test_output_sample_rate(rate, device_index):
+                return rate
+        
+        return 44100  # Fallback final
+    
+    def _get_first_output_device(self):
+        """Trouve le premier périphérique de sortie disponible"""
+        for i in range(self.p.get_device_count()):
+            try:
+                info = self.p.get_device_info_by_index(i)
+                if info['maxOutputChannels'] > 0:
+                    return i
+            except:
+                continue
+        raise Exception("No output device found")
+    
+    def _test_output_sample_rate(self, rate, device_index):
+        """Test si un taux d'échantillonnage est supporté par le périphérique de sortie"""
+        try:
+            return self.p.is_format_supported(
+                rate=rate,
+                output_device=device_index,
+                output_channels=self.CHANNELS,
+                output_format=self.FORMAT
+            )
+        except Exception as e:
+            logger.debug(f"Sample rate {rate} test failed on output device {device_index}: {e}")
+            return False
         
     def start_playback(self):
         if self.is_playing:
@@ -528,13 +632,79 @@ class AudioPlayback:
         except Exception as e:
             logger.warning(f"Error terminating PyAudio playback: {e}")
 
+class TTSService:
+    def __init__(self, playback_audio: AudioPlayback, voice: str = "fr-FR-DenisNeural"):
+        self.playback_audio = playback_audio
+        self.playback_buffer = playback_audio.buffer
+        self.voice = voice
+        
+    async def synthesize_and_queue(self, text: str):
+        """Synthétise le texte et l'ajoute au buffer de lecture"""
+        if not text.strip():
+            return
+            
+        logger.info(f"TTS synthesis [{self.voice}]: {text[:50]}...")
+        
+        try:
+            communicate = edge_tts.Communicate(text=text, voice=self.voice)
+            
+            # Récupérer tout l'audio d'abord
+            audio_data = b""
+            async for chunk in communicate.stream():
+                if chunk["type"] == "audio":
+                    audio_data += chunk["data"]
+            
+            if not audio_data:
+                logger.error("No audio received from Edge TTS")
+                return
+                
+            # Convertir et ajouter au buffer
+            converted_audio = self._convert_audio_format(audio_data)
+            if converted_audio:
+                self._queue_audio_chunks(converted_audio)
+                logger.info("TTS synthesis completed")
+            else:
+                logger.error("Audio conversion failed")
+                
+        except Exception as e:
+            logger.error(f"Error in TTS synthesis: {e}")
+    
+    def _convert_audio_format(self, audio_data: bytes) -> bytes:
+        """Convertit l'audio au format PyAudio"""
+        try:
+            # Edge TTS produit du MP3
+            audio_segment = AudioSegment.from_mp3(io.BytesIO(audio_data))
+            
+            # Convertir au format du player (mono, au sample rate détecté)
+            audio_segment = audio_segment.set_frame_rate(self.playback_buffer.sample_rate)
+            audio_segment = audio_segment.set_channels(1)
+            audio_segment = audio_segment.set_sample_width(2)  # 16-bit
+            
+            return audio_segment.raw_data
+            
+        except Exception as e:
+            logger.error(f"Audio conversion error: {e}")
+            return b''
+    
+    def _queue_audio_chunks(self, audio_data: bytes, chunk_size: int = 1024):
+        """Découpe et envoie l'audio au buffer de lecture"""
+        try:
+            for i in range(0, len(audio_data), chunk_size):
+                chunk = audio_data[i:i + chunk_size]
+                if len(chunk) > 0:
+                    self.playback_buffer.add_audio_chunk(chunk)
+        except Exception as e:
+            logger.error(f"Error queueing audio chunks: {e}")
+
 
 class TranscriptionService:
-    def __init__(self, audio_capture: AudioCapture, gladia_key: str, agent_language: str = "fr", target_language: str = "en"):
+    def __init__(self, audio_capture: AudioCapture, gladia_key: str, agent_language: str = "fr", 
+                 target_language: str = "en", tts_service: TTSService = None):
         self.audio_capture = audio_capture
         self.gladia_key = gladia_key
         self.agent_language = agent_language
         self.target_language = target_language
+        self.tts_service = tts_service
         
         self.is_traduction = (
             self.target_language and self.target_language != "auto" and agent_language != target_language
@@ -562,7 +732,7 @@ class TranscriptionService:
                     "match_original_utterances": True,
                     "lipsync": True,
                     "context_adaptation": True,
-                    "context": "Call center",
+                    "context": "This is a conversation in a Call center for Gladia product",
                     "informal": False
                 }
             }
@@ -591,6 +761,11 @@ class TranscriptionService:
             if self.is_transcribing and content["type"] == "translation":
                 text = content["data"]["translated_utterance"]["text"].strip()
                 print(" "*4, text)
+                
+                # Synthétiser le texte traduit si TTS est disponible
+                if self.tts_service and text:
+                    asyncio.create_task(self.tts_service.synthesize_and_queue(text))
+                    
             elif content["type"] == "transcription":
                 text = content["data"]["translated_utterance"]["text"].strip()
                 print(" "*4, text)
@@ -861,61 +1036,60 @@ class VADTranscriptionController:
                 'is_transcribing': self.transcription_service.is_transcribing
             }
 
-class TTSService:
-    def __init__(self, playback_buffer: SharedAudioPlaybackBuffer, voice: str = "fr-FR-DenisNeural"):
-        self.playback_buffer = playback_buffer
-        self.voice = voice
-        
-    async def synthesize_and_queue_direct(self, text: str):
-        """Synthétise et stream directement chunk par chunk"""
-        if not text.strip():
-            return
-            
-        try:
-            communicate = edge_tts.Communicate(text=text, voice=self.voice)
-            
-            audio_buffer = io.BytesIO()
-            
-            # Stream les chunks audio au fur et à mesure
-            async for chunk in communicate.stream():
-                if chunk["type"] == "audio":
-                    # Accumuler un peu d'audio avant de convertir
-                    audio_buffer.write(chunk["data"])
-                    
-                    # Quand on a assez de données, convertir et jouer
-                    if audio_buffer.tell() > 8192:  # Seuil arbitraire
-                        audio_buffer.seek(0)
-                        converted_audio = self._convert_audio_format(audio_buffer.getvalue())
-                        if converted_audio:
-                            self._queue_audio_chunks(converted_audio)
-                        
-                        # Reset du buffer
-                        audio_buffer = io.BytesIO()
-            
-            # Traiter le reste du buffer
-            if audio_buffer.tell() > 0:
-                audio_buffer.seek(0)
-                converted_audio = self._convert_audio_format(audio_buffer.getvalue())
-                if converted_audio:
-                    self._queue_audio_chunks(converted_audio)
-                    
-            logger.info(f"TTS streaming completed: {text[:50]}...")
-            
-        except Exception as e:
-            logger.error(f"Error in TTS streaming: {e}")
-
 
 class GladiaAudioManager:
     def __init__(self, gladia_key: str, 
-                 agent_device: AudioCapture,
+                 agent_device: AudioDevice,
                  agent_language: str = "fr",
-                 target_device: AudioCapture | None = None,
+                 target_device: AudioDevice | None = None,
                  target_language: Optional[str] = "en",
-                 silence_timeout: float = 30.0, prebuffer_seconds: float = 5.5):
+                 output_device: AudioDevice | None = None,
+                 silence_timeout: float = 30.0, 
+                 prebuffer_seconds: float = 5.5,
+                 enable_tts: bool = False,
+                 tts_voice: str = None):
 
         self.audio_buffer = SharedAudioBuffer(prebuffer_seconds=prebuffer_seconds)
         self.audio_capture = AudioCapture(self.audio_buffer, agent_device)
-        self.transcription_service = TranscriptionService(self.audio_capture, gladia_key=gladia_key, agent_language=agent_language, target_language=target_language)
+        
+        # Setup TTS if enabled
+        self.tts_service = None
+        self.audio_playback = None
+        self.playback_buffer = None
+        
+        if enable_tts:
+            # Créer le buffer de lecture
+            self.playback_buffer = SharedAudioPlaybackBuffer()
+            
+            # Créer le service de lecture audio
+            self.audio_playback = AudioPlayback(self.playback_buffer, output_device)
+            
+            # Déterminer la voix TTS basée sur la langue cible
+            if tts_voice:
+                voice = tts_voice
+            else:
+                # Voix par défaut selon la langue
+                voice_map = {
+                    "fr": "fr-FR-DenisNeural",
+                    "en": "en-US-AriaNeural",
+                    "es": "es-ES-AlvaroNeural",
+                    "de": "de-DE-ConradNeural"
+                }
+                voice = voice_map.get(target_language, "en-US-AriaNeural")
+            
+            # Créer le service TTS
+            self.tts_service = TTSService(self.audio_playback, voice=voice)
+            logger.info(f"TTS enabled with voice: {voice}")
+        
+        # Créer le service de transcription avec TTS
+        self.transcription_service = TranscriptionService(
+            self.audio_capture, 
+            gladia_key=gladia_key, 
+            agent_language=agent_language, 
+            target_language=target_language,
+            tts_service=self.tts_service
+        )
+        
         self.vad_model = load_silero_vad()
         self.vad_controller = VADTranscriptionController(
             self.audio_capture, 
@@ -927,11 +1101,20 @@ class GladiaAudioManager:
     def start_audio_capture(self):
         logger.debug(f"Starting audio capture with {self.audio_buffer.prebuffer_seconds}s pre-buffer...")
         self.audio_capture.start_capture()
+        
+        # Démarrer la lecture audio si TTS est activé
+        if self.audio_playback:
+            self.audio_playback.start_playback()
+            
         return self
         
     def stop_audio_capture(self):
         logger.debug("Stopping audio capture...")
         self.audio_capture.stop_capture()
+        
+        # Arrêter la lecture audio si TTS est activé
+        if self.audio_playback:
+            self.audio_playback.stop_playback()
         
     def start_vad_monitoring(self):
         self.vad_controller.start_monitoring()
@@ -941,15 +1124,18 @@ class GladiaAudioManager:
         self.vad_controller.stop_monitoring()
         
     def get_buffer_stats(self):
-        chunks = self.audio_buffer.get_all_chunks()
-        prebuffer_chunks = self.audio_buffer.get_prebuffer_chunks()
-        return {
-            'total_chunks': len(chunks),
-            'prebuffer_chunks': len(prebuffer_chunks),
+        stats = {
+            'total_chunks': len(self.audio_buffer.get_all_chunks()),
+            'prebuffer_chunks': len(self.audio_buffer.get_prebuffer_chunks()),
             'prebuffer_seconds': self.audio_buffer.prebuffer_seconds,
             'is_recording': self.audio_buffer.is_recording,
             'listeners': len(self.audio_buffer.listeners)
         }
+        
+        if self.playback_buffer:
+            stats['playback_buffer_size'] = len(self.playback_buffer.buffer)
+            
+        return stats
         
     def get_vad_status(self):
         return self.vad_controller.get_status()
@@ -957,6 +1143,9 @@ class GladiaAudioManager:
     def cleanup(self):
         self.vad_controller.stop_monitoring()
         self.audio_capture.cleanup()
+        
+        if self.audio_playback:
+            self.audio_playback.cleanup()
 
 def get_audio_devices(filter: list[str] = ["default", "dmix", "to_headset", "from_pc", "dmix_combined", "spdif", "iec958",
                                            "both_outputs", "vdownmix", "upmix", "speex", "speexrate", "samplerate", "lavrate",
@@ -1046,15 +1235,21 @@ def list_audio_devices():
             logger.info(f"[{device.index:2d}] {device.name}")
             logger.info(f"     Sample rate: {device.sample_rate} Hz, Channels: {device.max_channels}")
 
-async def main(allowed_languages: List[str] = ["auto", "fr", "en", "es", "de"], silence_timeout: float = 30.0, prebuffer_seconds: float = 3.0, debug: bool = False):
+async def main(allowed_languages: List[str] = ["auto", "fr", "en", "es", "de"], 
+               silence_timeout: float = 30.0, 
+               prebuffer_seconds: float = 3.0, 
+               debug: bool = False):
     parser = argparse.ArgumentParser()
 
-    parser.add_argument("--agent-device",   type=get_device_info,      help="USB device name for agent mic (e.g., 'Logitech').")
+    parser.add_argument("--agent-device",   type=get_device_info,      help="USB device name for agent mic (e.g., 'CM477').")
     parser.add_argument("--agent-language", choices=allowed_languages, default="auto", help="Language spoken by the agent.")
     parser.add_argument("--phone-device",   type=get_device_info,      help="USB device name for phone mic.")
     parser.add_argument("--phone-language", choices=allowed_languages, default="auto", help="Language spoken by the phone.")
+    parser.add_argument("--output-device",  type=get_output_device_info, help="USB device name for audio output (e.g., 'KT USB').")
     parser.add_argument("--gladia-key",     type=str,                  help="Gladia API key. If omitted, will try the 'GLADIA_KEY' environment variable.")
     parser.add_argument("--list-devices", action="store_true", help="List all available audio devices and exit.")
+    parser.add_argument("--enable-tts", action="store_true", help="Enable Text-to-Speech for translations.")
+    parser.add_argument("--tts-voice", type=str, help="Edge-TTS voice to use (e.g., 'fr-FR-DenisNeural').")
 
     args = parser.parse_args()
 
@@ -1069,13 +1264,33 @@ async def main(allowed_languages: List[str] = ["auto", "fr", "en", "es", "de"], 
         logger.setLevel(logging.DEBUG)
         
     print(f"===== Gladia Live Transcription + Auto VAD + Pre-buffer ({prebuffer_seconds}s) =====")
-    GladiaAudioManager
-    manager = GladiaAudioManager(gladia_key, agent_device=args.agent_device,
-                                 agent_language=args.agent_language, 
-                                 target_language=args.phone_language, 
-                                 silence_timeout=silence_timeout, 
-                                 prebuffer_seconds=prebuffer_seconds).start_audio_capture().start_vad_monitoring()
+    
+    # Si pas de device de sortie spécifié mais TTS activé, utiliser le device d'entrée
+    output_device = args.output_device
+    if args.enable_tts and not output_device and args.agent_device:
+        try:
+            # Essayer de trouver le même device en sortie
+            output_device = get_output_device_info(args.agent_device.name.split(':')[0])
+            logger.info(f"Using same device for output: {output_device.name}")
+        except:
+            logger.warning("Could not find matching output device, will use default")
+    
+    manager = GladiaAudioManager(
+        gladia_key, 
+        agent_device=args.agent_device,
+        agent_language=args.agent_language, 
+        target_language=args.phone_language,
+        output_device=output_device,
+        silence_timeout=silence_timeout, 
+        prebuffer_seconds=prebuffer_seconds,
+        enable_tts=args.enable_tts,
+        tts_voice=args.tts_voice
+    ).start_audio_capture().start_vad_monitoring()
+    
     logger.info('Starting transcription...\n')
+    
+    if args.enable_tts:
+        logger.info(f"TTS enabled - Output device: {output_device.name if output_device else 'default'}")
 
     try:
         while True:
@@ -1089,15 +1304,5 @@ async def main(allowed_languages: List[str] = ["auto", "fr", "en", "es", "de"], 
         logger.info("Goodbye!")
 
 
-async def synthesize_text(text: str):
-    voice = "fr-FR-DenisNeural"
-    communicate = edge_tts.Communicate(text=text, voice=voice)
-    await communicate.save("output.mp3")
-
-
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-        #  asyncio.run(synthesize_text())
-    except Exception as e:
-        logger.error(f"Unexpected error: {e}")
+    asyncio.run(main())
