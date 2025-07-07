@@ -3,7 +3,7 @@ Pour l'instant, la transcription fonctionne correctement, et j'ai bien un pré b
 Schéma pour comprendre le projet du traducteur universel:
 ```
       ┌──────────────────────────────────────────┐
-      │        phone-device (auto-language)      │
+      │        phone-device (auto-language ou en)│
       └──────────────────────────────────────────┘
                      ↑           ↓
            [synthèse vocale] [transcription]

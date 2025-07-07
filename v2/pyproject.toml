@@ -9,5 +9,6 @@ dependencies = [
     "torch",
     "numpy",
     "silero-vad",
-    "edge-tts"
+    "edge-tts",
+    "pydub>=0.25.1",
 ]

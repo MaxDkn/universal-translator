@@ -5,12 +5,13 @@ import queue
 import base64
 import asyncio
 import logging
+import warnings
 import argparse
 import threading
 from enum import Enum
 from collections import deque
-from typing import Literal, TypedDict, List
 from datetime import datetime, timedelta
+from typing import Literal, TypedDict, List, Optional
 
 import torch
 import pyaudio
@@ -20,6 +21,7 @@ import numpy as np
 from websockets.exceptions import ConnectionClosedOK
 from websockets.asyncio.client import ClientConnection, connect
 from silero_vad import get_speech_timestamps, load_silero_vad
+warnings.filterwarnings("ignore", message="Sampling rate is a multiply of 16000")
 
 
 logging.basicConfig(
@@ -66,12 +68,23 @@ class LanguageConfiguration(TypedDict):
     languages: list[str] | None
     code_switching: bool | None
 
+class TranslationConfiguration(TypedDict):
+    target_languages: list[str]
+    context_adaptation: bool
+    context: str
+
+class RealtimeProcessingConfiguration(TypedDict):
+    translation: bool
+    translation_config: TranslationConfiguration | None
+
 class StreamingConfiguration(TypedDict):
     encoding: Literal["wav/pcm", "wav/alaw", "wav/ulaw"]
     bit_depth: Literal[8, 16, 24, 32]
     sample_rate: Literal[8_000, 16_000, 32_000, 44_100, 48_000]
     channels: int
     language_config: LanguageConfiguration | None
+    realtime_processing: RealtimeProcessingConfiguration | None
+
 
 class AudioDevice:
     def __init__(self, index: int, name: str, sample_rate: int, max_channels: int):
@@ -207,9 +220,33 @@ class SharedAudioBuffer:
         if listener_queue in self.listeners:
             self.listeners.remove(listener_queue)
 
+class SharedAudioPlaybackBuffer:
+    def __init__(self, max_chunks: int = 1000):
+        self.buffer = deque(maxlen=max_chunks)
+        self.lock = threading.Lock()
+        self.is_playing = False
+        
+    def add_audio_chunk(self, chunk_data: bytes):
+        with self.lock:
+            self.buffer.append(chunk_data)
+            
+    def get_chunks_to_play(self) -> list:
+        with self.lock:
+            if not self.buffer:
+                return []
+            # Retourner tous les chunks et vider le buffer
+            chunks = list(self.buffer)
+            self.buffer.clear()
+            return chunks
+            
+    def clear(self):
+        with self.lock:
+            self.buffer.clear()
+
 class AudioCapture:
-    def __init__(self, buffer: SharedAudioBuffer):
+    def __init__(self, buffer: SharedAudioBuffer, device: AudioDevice = None):
         self.buffer = buffer
+        self.device = device
         self.p = pyaudio.PyAudio()
         self.stream = None
         self.is_running = False
@@ -218,21 +255,145 @@ class AudioCapture:
         self.CHANNELS = 1
         self.FORMAT = pyaudio.paInt16
         self.FRAMES_PER_BUFFER = 3200
-        self.SAMPLE_RATE = 16_000
         
+        # Utilisez les informations du périphérique si disponibles
+        if self.device:
+            self.SAMPLE_RATE = self._find_best_sample_rate_for_device()
+            logger.info(f"Using device: {self.device.name}")
+            logger.info(f"Device default rate: {self.device.sample_rate} Hz")
+            logger.info(f"Selected rate: {self.SAMPLE_RATE} Hz")
+        else:
+            # Fallback si aucun périphérique spécifié
+            self.SAMPLE_RATE = self._find_best_sample_rate_auto()
+            logger.warning("No specific device provided, using auto-detection")
+        
+    def _find_best_sample_rate_for_device(self):
+        """Trouve le meilleur taux d'échantillonnage pour le périphérique spécifié"""
+        # Taux préférés (compatibles avec VAD Silero)
+        vad_compatible_rates = [16000, 8000, 32000, 48000]
+        # Autres taux standards
+        standard_rates = [44100, 22050, 11025]
+        
+        # D'abord, essayez le taux par défaut du périphérique s'il est compatible VAD
+        device_rate = int(self.device.sample_rate)
+        if device_rate in vad_compatible_rates:
+            if self._test_sample_rate(device_rate, self.device.index):
+                logger.info(f"Using device default rate (VAD-compatible): {device_rate} Hz")
+                return device_rate
+        
+        # Ensuite, testez les taux VAD-compatibles
+        for rate in vad_compatible_rates:
+            if self._test_sample_rate(rate, self.device.index):
+                logger.info(f"Using VAD-compatible rate: {rate} Hz")
+                return rate
+        
+        # Si aucun taux VAD-compatible, essayez le taux par défaut du périphérique
+        if self._test_sample_rate(device_rate, self.device.index):
+            logger.warning(f"Using device default rate (non-VAD): {device_rate} Hz (will need resampling)")
+            return device_rate
+        
+        # Essayez les autres taux standards
+        for rate in standard_rates:
+            if self._test_sample_rate(rate, self.device.index):
+                logger.warning(f"Using standard rate: {rate} Hz (will need resampling)")
+                return rate
+                
+        # Dernière chance
+        logger.error(f"No supported sample rate found for device {self.device.name}")
+        return 16000  # Fallback
+    
+    def _find_best_sample_rate_auto(self):
+        """Trouve automatiquement un taux d'échantillonnage (fallback)"""
+        vad_compatible_rates = [16000, 8000, 32000, 48000]
+        standard_rates = [44100, 22050]
+        
+        try:
+            default_device = self.p.get_default_input_device_info()
+            device_index = default_device['index']
+        except:
+            device_index = self._get_first_input_device()
+        
+        # Testez les taux VAD-compatibles
+        for rate in vad_compatible_rates:
+            if self._test_sample_rate(rate, device_index):
+                logger.info(f"Auto-detected VAD-compatible rate: {rate} Hz")
+                return rate
+        
+        # Testez les autres taux
+        for rate in standard_rates:
+            if self._test_sample_rate(rate, device_index):
+                logger.warning(f"Auto-detected standard rate: {rate} Hz (will need resampling)")
+                return rate
+                
+        return 16000  # Fallback
+    
+    def _test_sample_rate(self, rate, device_index):
+        """Test si un taux d'échantillonnage est supporté par le périphérique"""
+        try:
+            return self.p.is_format_supported(
+                rate=rate,
+                input_device=device_index,
+                input_channels=self.CHANNELS,
+                input_format=self.FORMAT
+            )
+        except Exception as e:
+            logger.debug(f"Sample rate {rate} test failed on device {device_index}: {e}")
+            return False
+    
+    def _get_first_input_device(self):
+        """Trouve le premier périphérique d'entrée disponible"""
+        for i in range(self.p.get_device_count()):
+            try:
+                info = self.p.get_device_info_by_index(i)
+                if info['maxInputChannels'] > 0:
+                    return i
+            except:
+                continue
+        raise Exception("No input device found")
+    
     def start_capture(self):
         if self.is_running:
             return
             
         self.is_running = True
         
-        self.stream = self.p.open(
-            format=self.FORMAT,
-            channels=self.CHANNELS,
-            rate=self.SAMPLE_RATE,
-            input=True,
-            frames_per_buffer=self.FRAMES_PER_BUFFER,
-        )
+        # Configuration basée sur le périphérique sélectionné
+        config = {
+            'format': self.FORMAT,
+            'channels': self.CHANNELS,
+            'rate': self.SAMPLE_RATE,
+            'input': True,
+            'frames_per_buffer': self.FRAMES_PER_BUFFER,
+        }
+        
+        # Utilisez le périphérique spécifique si disponible
+        if self.device:
+            config['input_device_index'] = self.device.index
+            
+        try:
+            logger.debug(f"Opening audio stream: {config}")
+            self.stream = self.p.open(**config)
+            device_name = self.device.name if self.device else "default"
+            logger.info(f"✓ Audio stream opened successfully")
+            logger.info(f"  Device: {device_name}")
+            logger.info(f"  Sample rate: {self.SAMPLE_RATE} Hz")
+            logger.info(f"  Channels: {self.CHANNELS}")
+            
+        except Exception as e:
+            device_name = self.device.name if self.device else "auto-detect"
+            logger.error(f"Failed to open audio stream for device '{device_name}': {e}")
+            
+            # Si on a un périphérique spécifique et que ça échoue, essayez sans
+            if self.device:
+                logger.warning("Retrying without specific device...")
+                try:
+                    config.pop('input_device_index', None)
+                    self.stream = self.p.open(**config)
+                    logger.warning("✓ Opened with default device")
+                except Exception as e2:
+                    raise AudioStreamStartException(device_name, str(e2))
+            else:
+                raise AudioStreamStartException(device_name, str(e))
         
         self.thread = threading.Thread(target=self._capture_loop)
         self.thread.daemon = True
@@ -242,11 +403,14 @@ class AudioCapture:
         self.is_running = False
         
         if self.thread:
-            self.thread.join()
+            self.thread.join(timeout=2)
             
         if self.stream:
-            self.stream.stop_stream()
-            self.stream.close()
+            try:
+                self.stream.stop_stream()
+                self.stream.close()
+            except Exception as e:
+                logger.warning(f"Error closing stream: {e}")
             
     def _capture_loop(self):
         while self.is_running:
@@ -255,8 +419,10 @@ class AudioCapture:
                     logger.error("Stream audio non initialisé")
                     break
                 
-                data = self.stream.read(self.FRAMES_PER_BUFFER, exception_on_overflow=False)
-                # Ajouter TOUJOURS les chunks au buffer (même si pas en recording)
+                data = self.stream.read(
+                    self.FRAMES_PER_BUFFER, 
+                    exception_on_overflow=False
+                )
                 self.buffer.add_chunk(data)
                 time.sleep(0.01)
             except Exception as e:
@@ -265,19 +431,121 @@ class AudioCapture:
                 
     def cleanup(self):
         self.stop_capture()
-        self.p.terminate()
+        try:
+            self.p.terminate()
+        except Exception as e:
+            logger.warning(f"Error terminating PyAudio: {e}")
+
+class AudioPlayback:
+    def __init__(self, buffer: 'SharedAudioPlaybackBuffer', device: AudioDevice = None):
+        self.buffer = buffer
+        self.device = device
+        self.p = pyaudio.PyAudio()
+        self.stream = None
+        self.is_playing = False
+        self.thread = None
+        
+        # Configuration audio pour la lecture
+        self.CHANNELS = 2  # Stéréo pour la sortie
+        self.FORMAT = pyaudio.paInt16
+        self.SAMPLE_RATE = 44100  # Standard pour la lecture
+        self.FRAMES_PER_BUFFER = 1024
+        
+        if self.device:
+            logger.info(f"Using output device: {self.device.name}")
+        
+    def start_playback(self):
+        if self.is_playing:
+            return
+            
+        self.is_playing = True
+        
+        # Configuration du stream de sortie
+        config = {
+            'format': self.FORMAT,
+            'channels': self.CHANNELS,
+            'rate': self.SAMPLE_RATE,
+            'output': True,
+            'frames_per_buffer': self.FRAMES_PER_BUFFER,
+        }
+        
+        # Utilisez le périphérique spécifique si disponible
+        if self.device:
+            config['output_device_index'] = self.device.index
+            
+        try:
+            self.stream = self.p.open(**config)
+            device_name = self.device.name if self.device else "default"
+            logger.info(f"✓ Audio playback stream opened successfully on {device_name}")
+            
+        except Exception as e:
+            device_name = self.device.name if self.device else "auto-detect"
+            logger.error(f"Failed to open audio playback stream for device '{device_name}': {e}")
+            raise AudioStreamStartException(device_name, str(e))
+        
+        self.thread = threading.Thread(target=self._playback_loop)
+        self.thread.daemon = True
+        self.thread.start()
+        
+    def stop_playback(self):
+        self.is_playing = False
+        
+        if self.thread:
+            self.thread.join(timeout=2)
+            
+        if self.stream:
+            try:
+                self.stream.stop_stream()
+                self.stream.close()
+            except Exception as e:
+                logger.warning(f"Error closing playback stream: {e}")
+                
+    def _playback_loop(self):
+        while self.is_playing:
+            try:
+                if self.stream is None:
+                    logger.error("Playback stream not initialized")
+                    break
+                
+                # Récupérer les chunks audio depuis le buffer
+                chunks = self.buffer.get_chunks_to_play()
+                if chunks:
+                    for chunk_data in chunks:
+                        if not self.is_playing:
+                            break
+                        self.stream.write(chunk_data)
+                        
+                time.sleep(0.01)
+            except Exception as e:
+                logger.error(f"Error in playback loop: {e}")
+                break
+                
+    def cleanup(self):
+        self.stop_playback()
+        try:
+            self.p.terminate()
+        except Exception as e:
+            logger.warning(f"Error terminating PyAudio playback: {e}")
+
+
 
 class TranscriptionService:
-    def __init__(self, buffer: SharedAudioBuffer, gladia_key: str):
-        self.buffer = buffer
+    def __init__(self, audio_capture: AudioCapture, gladia_key: str, agent_language: str = "fr", target_language: str = "en"):
+        self.audio_capture = audio_capture
+        self.gladia_key = gladia_key
+        self.agent_language = agent_language
+        self.target_language = target_language
+        
+        self.is_traduction = (
+            self.target_language and self.target_language != "auto" and agent_language != target_language
+        )
         self.is_transcribing = False
         self.listener_queue = None
         self.stop_event = threading.Event()
-        self.gladia_key = gladia_key
         
         self.STREAMING_CONFIGURATION: StreamingConfiguration = {
             "encoding": "wav/pcm",
-            "sample_rate": 16_000,
+            "sample_rate": self.audio_capture.SAMPLE_RATE,
             "bit_depth": 16,
             "channels": 1,
             "language_config": {
@@ -285,6 +553,21 @@ class TranscriptionService:
                 "code_switching": True,
             },
         }
+        if self.is_traduction:
+            self.STREAMING_CONFIGURATION["realtime_processing"] = {
+                "translation": True,
+                "translation_config": {
+                    "target_languages": [target_language],
+                    "model": "base",
+                    "match_original_utterances": True,
+                    "lipsync": True,
+                    "context_adaptation": True,
+                    "context": "Call center",
+                    "informal": False
+                }
+            }
+
+            logger.info(f"Translation enabled - target language: {self.target_language}")
         
     def init_live_session(self) -> InitiateResponse:
         response = requests.post(
@@ -294,19 +577,25 @@ class TranscriptionService:
             timeout=3,
         )
         if not response.ok:
-            print(f"{response.status_code}: {response.text or response.reason}")
+            logger.error(f"{response.status_code}: {response.text or response.reason}")
             exit(response.status_code)
         return response.json()
         
     async def print_messages_from_socket(self, socket: ClientConnection) -> None:
+        
         async for message in socket:
             if self.stop_event.is_set():
                 break
                 
             content = json.loads(message)
-            if content["type"] == "transcript" and content["data"]["is_final"]:
-                text = content["data"]["utterance"]["text"].strip()
+            if self.is_transcribing and content["type"] == "translation":
+                text = content["data"]["translated_utterance"]["text"].strip()
                 print(" "*4, text)
+            elif content["type"] == "transcription":
+                text = content["data"]["translated_utterance"]["text"].strip()
+                print(" "*4, text)
+            
+            
             if content["type"] == "post_final_transcript":
                 logger.debug("Transcription finished automatically")
                 self.is_transcribing = False
@@ -314,10 +603,10 @@ class TranscriptionService:
     
     async def send_prebuffer_chunks(self, socket: ClientConnection) -> None:
         """Envoie les chunks du pre-buffer au début de la transcription"""
-        prebuffer_chunks = self.buffer.get_prebuffer_chunks()
+        prebuffer_chunks = self.audio_capture.buffer.get_prebuffer_chunks()
         
         if prebuffer_chunks:
-            logger.debug(f"Sending {len(prebuffer_chunks)} pre-buffer chunks ({self.buffer.prebuffer_seconds}s)")
+            logger.debug(f"Sending {len(prebuffer_chunks)} pre-buffer chunks ({self.audio_capture.buffer.prebuffer_seconds}s)")
             
             for chunk_info in prebuffer_chunks:
                 if self.stop_event.is_set():
@@ -359,7 +648,7 @@ class TranscriptionService:
             
         self.is_transcribing = True
         self.stop_event.clear()
-        self.listener_queue = self.buffer.register_listener()
+        self.listener_queue = self.audio_capture.buffer.register_listener()
         
         try:
             response = self.init_live_session()
@@ -371,7 +660,7 @@ class TranscriptionService:
                 await self.send_prebuffer_chunks(websocket)
                 
                 # 2. Démarrer l'enregistrement pour les nouveaux chunks
-                self.buffer.start_recording()
+                self.audio_capture.buffer.start_recording()
                 
                 # 3. Démarrer les tâches de streaming
                 send_audio_task = asyncio.create_task(self.send_audio_from_buffer(websocket))
@@ -387,7 +676,7 @@ class TranscriptionService:
                     if done:
                         for task in done:
                             if task.exception():
-                                print(f"Erreur dans une tâche: {task.exception()}")
+                                logger.error(f"Error in a task: {task.exception()}")
                                 self.is_transcribing = False
                                 break
                 
@@ -403,11 +692,11 @@ class TranscriptionService:
                             pass
                         
         except Exception as e:
-            print(f"Erreur pendant la transcription: {e}")
+            logger.error(f"Error during transcription: {e}")
         finally:
             self.is_transcribing = False
-            self.buffer.stop_recording()
-            self.buffer.unregister_listener(self.listener_queue)
+            self.audio_capture.buffer.stop_recording()
+            self.audio_capture.buffer.unregister_listener(self.listener_queue)
             
     def stop_transcription(self):
         logger.debug("Stopping transcription requested")
@@ -573,10 +862,16 @@ class VADTranscriptionController:
             }
 
 class GladiaAudioManager:
-    def __init__(self, gladia_key: str, silence_timeout: float = 30.0, prebuffer_seconds: float = 3.0):
+    def __init__(self, gladia_key: str, 
+                 agent_device: AudioCapture,
+                 agent_language: str = "fr",
+                 target_device: AudioCapture | None = None,
+                 target_language: Optional[str] = "en",
+                 silence_timeout: float = 30.0, prebuffer_seconds: float = 3.0):
+
         self.audio_buffer = SharedAudioBuffer(prebuffer_seconds=prebuffer_seconds)
-        self.audio_capture = AudioCapture(self.audio_buffer)
-        self.transcription_service = TranscriptionService(self.audio_buffer, gladia_key)
+        self.audio_capture = AudioCapture(self.audio_buffer, agent_device)
+        self.transcription_service = TranscriptionService(self.audio_capture, gladia_key=gladia_key, agent_language=agent_language, target_language=target_language)
         self.vad_model = load_silero_vad()
         self.vad_controller = VADTranscriptionController(
             self.audio_capture, 
@@ -619,31 +914,93 @@ class GladiaAudioManager:
         self.vad_controller.stop_monitoring()
         self.audio_capture.cleanup()
 
-def get_audio_devices():
+def get_audio_devices(filter: list[str] = ["default", "dmix", "to_headset", "from_pc", "dmix_combined", "spdif", "iec958",
+                                           "both_outputs", "vdownmix", "upmix", "speex", "speexrate", "samplerate", "lavrate",
+                                           "surround40", "front", "pulse", "sysdefault", "a52"]):
+    """
+    Scans and returns available audio input and output devices.
+
+    Returns:
+        tuple: (input_devices, output_devices)
+            - input_devices: list of AudioDevice objects with input capabilities
+            - output_devices: list of AudioDevice objects with output capabilities
+
+    Each AudioDevice contains:
+        - index (int): device index in PyAudio
+        - name (str): device name
+        - sample_rate (int): default sample rate
+        - max_channels (int): number of input/output channels
+    """
     p = pyaudio.PyAudio()
     input_devices = []
     output_devices = []
+
+    try:
+        for i in range(p.get_device_count()):
+            info = p.get_device_info_by_index(i)
+
+            if int(info['maxInputChannels']) > 0 and str(info['name']) not in filter:
+                device = AudioDevice(
+                    index=i,
+                    name=str(info['name']),
+                    sample_rate=int(info['defaultSampleRate']),
+                    max_channels=int(info['maxInputChannels'])
+                )
+                input_devices.append(device)
+                logger.debug(f"Detected input device: {device}")
+
+            if int(info['maxOutputChannels']) > 0 and str(info['name']) not in filter:
+                device = AudioDevice(
+                    index=i,
+                    name=str(info['name']),
+                    sample_rate=int(info['defaultSampleRate']),
+                    max_channels=int(info['maxOutputChannels'])
+                )
+                output_devices.append(device)
+                logger.debug(f"Detected output device: {device}")
     
-    for i in range(p.get_device_count()):
-        info = p.get_device_info_by_index(i)
-        if int(info['maxInputChannels']) > 0:
-            input_devices.append(AudioDevice(
-                index=i,
-                name=str(info['name']),
-                sample_rate=int(info['defaultSampleRate']),
-                max_channels=int(info['maxInputChannels'])
-            ))
-        if int(info['maxOutputChannels']) > 0:
-            output_devices.append(AudioDevice(
-                index=i,
-                name=str(info['name']),
-                sample_rate=int(info['defaultSampleRate']),
-                max_channels=int(info['maxOutputChannels'])
-            ))
-    
-    p.terminate()
-    
+    except Exception as e:
+        logger.error(f"Error while retrieving audio devices: {e}")
+
+    finally:
+        p.terminate()
+
+    if not input_devices:
+        logger.warning("No input devices found.")
+    if not output_devices:
+        logger.warning("No output devices found.")
+
     return input_devices, output_devices
+
+def list_audio_devices():
+    """
+    Logs the list of available audio input and output devices.
+
+    This function retrieves and logs the available input (microphones) and output 
+    (speakers) audio devices, including their index, name, sample rate, and number 
+    of channels.
+
+    Requires a `get_audio_devices()` function that returns a tuple:
+    (list of input devices, list of output devices). Each device should have
+    `index`, `name`, `sample_rate`, and `max_channels` attributes.
+    """
+    input_devices, output_devices = get_audio_devices()
+    
+    logger.info("===== INPUT DEVICES (MICROPHONES) =====")
+    if not input_devices:
+        logger.warning("No input devices found.")
+    else:
+        for device in input_devices:
+            logger.info(f"[{device.index:2d}] {device.name}")
+            logger.info(f"     Sample rate: {device.sample_rate} Hz, Channels: {device.max_channels}")
+    
+    logger.info("====== OUTPUT DEVICES (SPEAKERS) ======")
+    if not output_devices:
+        logger.warning("No output devices found.")
+    else:
+        for device in output_devices:
+            logger.info(f"[{device.index:2d}] {device.name}")
+            logger.info(f"     Sample rate: {device.sample_rate} Hz, Channels: {device.max_channels}")
 
 async def main(allowed_languages: List[str] = ["auto", "fr", "en", "es", "de"], silence_timeout: float = 30.0, prebuffer_seconds: float = 3.0, debug: bool = False):
     parser = argparse.ArgumentParser()
@@ -653,8 +1010,13 @@ async def main(allowed_languages: List[str] = ["auto", "fr", "en", "es", "de"], 
     parser.add_argument("--phone-device",   type=get_device_info,      help="USB device name for phone mic.")
     parser.add_argument("--phone-language", choices=allowed_languages, default="auto", help="Language spoken by the phone.")
     parser.add_argument("--gladia-key",     type=str,                  help="Gladia API key. If omitted, will try the 'GLADIA_KEY' environment variable.")
+    parser.add_argument("--list-devices", action="store_true", help="List all available audio devices and exit.")
 
     args = parser.parse_args()
+
+    if args.list_devices:
+        list_audio_devices()
+        return
 
     gladia_key = args.gladia_key or os.getenv("GLADIA_API_KEY")
     gladia_key = is_gladia_key_valid(gladia_key)
@@ -663,13 +1025,18 @@ async def main(allowed_languages: List[str] = ["auto", "fr", "en", "es", "de"], 
         logger.setLevel(logging.DEBUG)
         
     print(f"===== Gladia Live Transcription + Auto VAD + Pre-buffer ({prebuffer_seconds}s) =====")
-    
-    manager = GladiaAudioManager(gladia_key, silence_timeout, prebuffer_seconds).start_audio_capture().start_vad_monitoring()
-    logger.info('Starting transcription...')
+    GladiaAudioManager
+    manager = GladiaAudioManager(gladia_key, agent_device=args.agent_device,
+                                 agent_language=args.agent_language, 
+                                 target_language=args.phone_language, 
+                                 silence_timeout=silence_timeout, 
+                                 prebuffer_seconds=prebuffer_seconds).start_audio_capture().start_vad_monitoring()
+    logger.info('Starting transcription...\n')
 
     try:
         while True:
-            input()
+            if input().lower() in ['q', '']:
+                break
             await asyncio.sleep(0.1)
     except KeyboardInterrupt:
         logger.info("Program interrupted by user.")
@@ -677,15 +1044,16 @@ async def main(allowed_languages: List[str] = ["auto", "fr", "en", "es", "de"], 
         manager.cleanup()
         logger.info("Goodbye!")
 
-async def synthesize_text():
-    text = """Bonjour Max, j'espère que ta journée se passe bien. Aujourd'hui, nous allons tester la synthèse vocale avec une voix masculine."""
+
+async def synthesize_text(text: str):
     voice = "fr-FR-DenisNeural"
     communicate = edge_tts.Communicate(text=text, voice=voice)
     await communicate.save("output.mp3")
+
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
         #  asyncio.run(synthesize_text())
     except Exception as e:
-        print(f"Erreur inattendue: {e}")
+        logger.error(f"Unexpected error: {e}")
