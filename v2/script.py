@@ -124,7 +124,18 @@ def is_gladia_key_valid(key: str | None, url: str = "https://api.gladia.io/v2/pr
     return key
 
 def get_device_info(device_name: str) -> AudioDevice:
-    """Find audio device info by USB device name with fallback options"""
+    """
+    Find audio device info by USB device name with fallback options.
+
+    Args:
+        device_name (str): USB device name to search for.
+
+    Returns:
+        AudioDevice: Audio device with the highest sample rate among candidates.
+
+    Raises:
+        DeviceNotFoundException: If no matching device is found.
+    """
     p = pyaudio.PyAudio()
     
     candidates = []
@@ -132,7 +143,7 @@ def get_device_info(device_name: str) -> AudioDevice:
     for i in range(p.get_device_count()):
         try:
             device_info = p.get_device_info_by_index(i)
-            if int(device_info['maxInputChannels']) > 0:  # Input device
+            if int(device_info['maxInputChannels']) > 0:
                 if device_name.lower() in str(device_info['name']).lower():
                     candidates.append(AudioDevice(
                         index=i,
@@ -151,7 +162,18 @@ def get_device_info(device_name: str) -> AudioDevice:
     return max(candidates, key=lambda x: x.sample_rate)
 
 def get_output_device_info(device_name: str) -> AudioDevice:
-    """Find audio output device info by USB device name"""
+    """
+    Find audio output device info by USB device name.
+
+    Args:
+        device_name (str): USB device name to search for.
+
+    Returns:
+        AudioDevice: Output audio device with the highest sample rate among candidates.
+
+    Raises:
+        DeviceNotFoundException: If no matching output device is found.
+    """
     p = pyaudio.PyAudio()
     
     candidates = []
@@ -159,7 +181,7 @@ def get_output_device_info(device_name: str) -> AudioDevice:
     for i in range(p.get_device_count()):
         try:
             device_info = p.get_device_info_by_index(i)
-            if int(device_info['maxOutputChannels']) > 0:  # Output device
+            if int(device_info['maxOutputChannels']) > 0:
                 if device_name.lower() in str(device_info['name']).lower():
                     candidates.append(AudioDevice(
                         index=i,
@@ -185,14 +207,12 @@ class SharedAudioBuffer:
         self.is_recording = False
         self.listeners = []
 
-        # Configuration du pre-buffer
         self.prebuffer_seconds = prebuffer_seconds
         self.prebuffer_duration = timedelta(seconds=prebuffer_seconds)
         
     def start_recording(self):
         with self.lock:
             self.is_recording = True
-            # Ne pas vider le buffer pour garder l'historique
             
     def stop_recording(self):
         with self.lock:
@@ -208,7 +228,6 @@ class SharedAudioBuffer:
             }
             self.buffer.append(chunk_info)
             
-            # Notifier les listeners seulement si on est en train d'enregistrer
             if self.is_recording:
                 for listener in self.listeners:
                     try:
@@ -221,7 +240,12 @@ class SharedAudioBuffer:
             return list(self.buffer)
     
     def get_prebuffer_chunks(self) -> list:
-        """Récupère les chunks du pre-buffer (dernières X secondes)"""
+        """
+        Retrieve pre-buffer chunks (last X seconds).
+
+        Returns:
+            list: List of chunk info dictionaries within the pre-buffer duration.
+        """
         with self.lock:
             if not self.buffer:
                 return []
@@ -229,7 +253,6 @@ class SharedAudioBuffer:
             current_time = datetime.now()
             cutoff_time = current_time - self.prebuffer_duration
             
-            # Trouver les chunks dans la fenêtre de pre-buffer
             prebuffer_chunks = []
             for chunk_info in reversed(self.buffer):
                 if chunk_info['timestamp'] >= cutoff_time:
@@ -237,7 +260,6 @@ class SharedAudioBuffer:
                 else:
                     break
                     
-            # Retourner dans l'ordre chronologique
             return list(reversed(prebuffer_chunks))
             
     def register_listener(self) -> queue.Queue:
@@ -263,7 +285,6 @@ class SharedAudioPlaybackBuffer:
         with self.lock:
             if not self.buffer:
                 return []
-            # Retourner tous les chunks et vider le buffer
             chunks = list(self.buffer)
             self.buffer.clear()
             return chunks
@@ -285,54 +306,55 @@ class AudioCapture:
         self.FORMAT = pyaudio.paInt16
         self.FRAMES_PER_BUFFER = 3200
         
-        # Utilisez les informations du périphérique si disponibles
         if self.device:
             self.SAMPLE_RATE = self._find_best_sample_rate_for_device()
             logger.info(f"Using device: {self.device.name}")
             logger.info(f"Device default rate: {self.device.sample_rate} Hz")
             logger.info(f"Selected rate: {self.SAMPLE_RATE} Hz")
         else:
-            # Fallback si aucun périphérique spécifié
             self.SAMPLE_RATE = self._find_best_sample_rate_auto()
             logger.warning("No specific device provided, using auto-detection")
         
     def _find_best_sample_rate_for_device(self):
-        """Trouve le meilleur taux d'échantillonnage pour le périphérique spécifié"""
-        # Taux préférés (compatibles avec VAD Silero)
+        """
+        Find the best sample rate for the specified device.
+
+        Returns:
+            int: Best supported sample rate for the device.
+        """
         vad_compatible_rates = [16000, 8000, 32000, 48000]
-        # Autres taux standards
         standard_rates = [44100, 22050, 11025]
         
-        # D'abord, essayez le taux par défaut du périphérique s'il est compatible VAD
         device_rate = int(self.device.sample_rate)
         if device_rate in vad_compatible_rates:
             if self._test_sample_rate(device_rate, self.device.index):
                 logger.info(f"Using device default rate (VAD-compatible): {device_rate} Hz")
                 return device_rate
         
-        # Ensuite, testez les taux VAD-compatibles
         for rate in vad_compatible_rates:
             if self._test_sample_rate(rate, self.device.index):
                 logger.info(f"Using VAD-compatible rate: {rate} Hz")
                 return rate
         
-        # Si aucun taux VAD-compatible, essayez le taux par défaut du périphérique
         if self._test_sample_rate(device_rate, self.device.index):
             logger.warning(f"Using device default rate (non-VAD): {device_rate} Hz (will need resampling)")
             return device_rate
         
-        # Essayez les autres taux standards
         for rate in standard_rates:
             if self._test_sample_rate(rate, self.device.index):
                 logger.warning(f"Using standard rate: {rate} Hz (will need resampling)")
                 return rate
                 
-        # Dernière chance
         logger.error(f"No supported sample rate found for device {self.device.name}")
-        return 16000  # Fallback
+        return 16000
     
     def _find_best_sample_rate_auto(self):
-        """Trouve automatiquement un taux d'échantillonnage (fallback)"""
+        """
+        Automatically find a sample rate (fallback).
+
+        Returns:
+            int: Best supported sample rate for auto-detected device.
+        """
         vad_compatible_rates = [16000, 8000, 32000, 48000]
         standard_rates = [44100, 22050]
         
@@ -342,22 +364,29 @@ class AudioCapture:
         except:
             device_index = self._get_first_input_device()
         
-        # Testez les taux VAD-compatibles
         for rate in vad_compatible_rates:
             if self._test_sample_rate(rate, device_index):
                 logger.info(f"Auto-detected VAD-compatible rate: {rate} Hz")
                 return rate
         
-        # Testez les autres taux
         for rate in standard_rates:
             if self._test_sample_rate(rate, device_index):
                 logger.warning(f"Auto-detected standard rate: {rate} Hz (will need resampling)")
                 return rate
                 
-        return 16000  # Fallback
+        return 16000
     
     def _test_sample_rate(self, rate, device_index):
-        """Test si un taux d'échantillonnage est supporté par le périphérique"""
+        """
+        Test if a sample rate is supported by the device.
+
+        Args:
+            rate (int): Sample rate to test.
+            device_index (int): Device index to test.
+
+        Returns:
+            bool: True if the sample rate is supported, False otherwise.
+        """
         try:
             return self.p.is_format_supported(
                 rate=rate,
@@ -370,7 +399,15 @@ class AudioCapture:
             return False
     
     def _get_first_input_device(self):
-        """Trouve le premier périphérique d'entrée disponible"""
+        """
+        Find the first available input device.
+
+        Returns:
+            int: Index of the first available input device.
+
+        Raises:
+            Exception: If no input device is found.
+        """
         for i in range(self.p.get_device_count()):
             try:
                 info = self.p.get_device_info_by_index(i)
@@ -386,7 +423,6 @@ class AudioCapture:
             
         self.is_running = True
         
-        # Configuration basée sur le périphérique sélectionné
         config = {
             'format': self.FORMAT,
             'channels': self.CHANNELS,
@@ -395,7 +431,6 @@ class AudioCapture:
             'frames_per_buffer': self.FRAMES_PER_BUFFER,
         }
         
-        # Utilisez le périphérique spécifique si disponible
         if self.device:
             config['input_device_index'] = self.device.index
             
@@ -412,7 +447,6 @@ class AudioCapture:
             device_name = self.device.name if self.device else "auto-detect"
             logger.error(f"Failed to open audio stream for device '{device_name}': {e}")
             
-            # Si on a un périphérique spécifique et que ça échoue, essayez sans
             if self.device:
                 logger.warning("Retrying without specific device...")
                 try:
@@ -474,47 +508,48 @@ class AudioPlayback:
         self.is_playing = False
         self.thread = None
         
-        # Configuration audio de base
-        self.CHANNELS = 1  # Mono pour Edge-TTS
+        self.CHANNELS = 1
         self.FORMAT = pyaudio.paInt16
         self.FRAMES_PER_BUFFER = 512
         
-        # Déterminer le meilleur sample rate pour le device
         if self.device:
             self.SAMPLE_RATE = self._find_best_output_sample_rate()
             logger.info(f"Using output device: {self.device.name}")
             logger.info(f"Selected output sample rate: {self.SAMPLE_RATE} Hz")
         else:
-            # Fallback si pas de device spécifié
             self.SAMPLE_RATE = self._find_best_output_sample_rate_auto()
             logger.info(f"Using default output device with sample rate: {self.SAMPLE_RATE} Hz")
     
     def _find_best_output_sample_rate(self):
-        """Trouve le meilleur taux d'échantillonnage supporté par le device de sortie"""
-        # Taux préférés dans l'ordre de préférence
-        # 22050 est idéal pour Edge-TTS, mais on teste d'autres aussi
+        """
+        Find the best sample rate supported by the output device.
+
+        Returns:
+            int: Best supported sample rate for the output device.
+        """
         preferred_rates = [22050, 44100, 48000, 16000, 24000, 32000, 8000]
         
-        # D'abord, essayer le taux par défaut du device
         device_rate = int(self.device.sample_rate)
         if self._test_output_sample_rate(device_rate, self.device.index):
             logger.debug(f"Device default rate {device_rate} Hz is supported")
-            # Si c'est un taux standard, l'utiliser
             if device_rate in preferred_rates or device_rate > 8000:
                 return device_rate
         
-        # Ensuite, tester les taux préférés
         for rate in preferred_rates:
             if self._test_output_sample_rate(rate, self.device.index):
                 logger.debug(f"Found supported rate: {rate} Hz")
                 return rate
         
-        # Si aucun taux préféré n'est supporté, utiliser le taux par défaut
         logger.warning(f"No preferred sample rate found, using device default: {device_rate} Hz")
         return device_rate
     
     def _find_best_output_sample_rate_auto(self):
-        """Trouve automatiquement un taux d'échantillonnage pour le device par défaut"""
+        """
+        Automatically find a sample rate for the default device.
+
+        Returns:
+            int: Best supported sample rate for the default output device.
+        """
         preferred_rates = [22050, 44100, 48000, 16000, 24000, 32000]
         
         try:
@@ -522,21 +557,27 @@ class AudioPlayback:
             device_index = default_device['index']
             device_rate = int(default_device['defaultSampleRate'])
             
-            # Tester le taux par défaut
             if self._test_output_sample_rate(device_rate, device_index):
                 return device_rate
         except:
             device_index = self._get_first_output_device()
         
-        # Tester les taux préférés
         for rate in preferred_rates:
             if self._test_output_sample_rate(rate, device_index):
                 return rate
         
-        return 44100  # Fallback final
+        return 44100
     
     def _get_first_output_device(self):
-        """Trouve le premier périphérique de sortie disponible"""
+        """
+        Find the first available output device.
+
+        Returns:
+            int: Index of the first available output device.
+
+        Raises:
+            Exception: If no output device is found.
+        """
         for i in range(self.p.get_device_count()):
             try:
                 info = self.p.get_device_info_by_index(i)
@@ -547,7 +588,16 @@ class AudioPlayback:
         raise Exception("No output device found")
     
     def _test_output_sample_rate(self, rate, device_index):
-        """Test si un taux d'échantillonnage est supporté par le périphérique de sortie"""
+        """
+        Test if a sample rate is supported by the output device.
+
+        Args:
+            rate (int): Sample rate to test.
+            device_index (int): Output device index to test.
+
+        Returns:
+            bool: True if the sample rate is supported, False otherwise.
+        """
         try:
             return self.p.is_format_supported(
                 rate=rate,
@@ -565,16 +615,14 @@ class AudioPlayback:
             
         self.is_playing = True
         
-        # Configuration du stream de sortie
         config = {
             'format': self.FORMAT,
-            'channels': self.CHANNELS,
+            'channels': 1,
             'rate': self.SAMPLE_RATE,
             'output': True,
             'frames_per_buffer': self.FRAMES_PER_BUFFER,
         }
         
-        # Utilisez le périphérique spécifique si disponible
         if self.device:
             config['output_device_index'] = self.device.index
             
@@ -612,7 +660,6 @@ class AudioPlayback:
                     logger.error("Playback stream not initialized")
                     break
                 
-                # Récupérer les chunks audio depuis le buffer
                 chunks = self.buffer.get_chunks_to_play()
                 if chunks:
                     for chunk_data in chunks:
@@ -639,7 +686,12 @@ class TTSService:
         self.voice = voice
         
     async def synthesize_and_queue(self, text: str):
-        """Synthétise le texte et l'ajoute au buffer de lecture"""
+        """
+        Synthesize text and add it to the playback buffer.
+
+        Args:
+            text (str): Text to synthesize.
+        """
         if not text.strip():
             return
             
@@ -648,7 +700,6 @@ class TTSService:
         try:
             communicate = edge_tts.Communicate(text=text, voice=self.voice)
             
-            # Récupérer tout l'audio d'abord
             audio_data = b""
             async for chunk in communicate.stream():
                 if chunk["type"] == "audio":
@@ -658,7 +709,6 @@ class TTSService:
                 logger.error("No audio received from Edge TTS")
                 return
                 
-            # Convertir et ajouter au buffer
             converted_audio = self._convert_audio_format(audio_data)
             if converted_audio:
                 self._queue_audio_chunks(converted_audio)
@@ -670,15 +720,21 @@ class TTSService:
             logger.error(f"Error in TTS synthesis: {e}")
     
     def _convert_audio_format(self, audio_data: bytes) -> bytes:
-        """Convertit l'audio au format PyAudio"""
+        """
+        Convert audio to PyAudio format.
+
+        Args:
+            audio_data (bytes): Raw audio data to convert.
+
+        Returns:
+            bytes: Converted audio data in PyAudio format.
+        """
         try:
-            # Edge TTS produit du MP3
             audio_segment = AudioSegment.from_mp3(io.BytesIO(audio_data))
             
-            # Convertir au format du player (mono, au sample rate détecté)
-            audio_segment = audio_segment.set_frame_rate(self.playback_buffer.sample_rate)
+            audio_segment = audio_segment.set_frame_rate(self.playback_audio.SAMPLE_RATE)
             audio_segment = audio_segment.set_channels(1)
-            audio_segment = audio_segment.set_sample_width(2)  # 16-bit
+            audio_segment = audio_segment.set_sample_width(2)
             
             return audio_segment.raw_data
             
@@ -687,7 +743,13 @@ class TTSService:
             return b''
     
     def _queue_audio_chunks(self, audio_data: bytes, chunk_size: int = 1024):
-        """Découpe et envoie l'audio au buffer de lecture"""
+        """
+        Split and send audio to the playback buffer.
+
+        Args:
+            audio_data (bytes): Audio data to split and queue.
+            chunk_size (int): Size of each audio chunk. Defaults to 1024.
+        """
         try:
             for i in range(0, len(audio_data), chunk_size):
                 chunk = audio_data[i:i + chunk_size]
@@ -697,18 +759,22 @@ class TTSService:
             logger.error(f"Error queueing audio chunks: {e}")
 
 
-class TranscriptionService:
-    def __init__(self, audio_capture: AudioCapture, gladia_key: str, agent_language: str = "fr", 
-                 target_language: str = "en", tts_service: TTSService = None):
+class TranscriptionAndVoiceService:
+    def __init__(self, gladia_key: str, audio_capture: AudioCapture, tts_service: TTSService, 
+                 agent_language: str = "fr", target_language: str = "en"):
+
         self.audio_capture = audio_capture
         self.gladia_key = gladia_key
+        self.tts_service = tts_service
+
         self.agent_language = agent_language
         self.target_language = target_language
-        self.tts_service = tts_service
+
         
         self.is_traduction = (
             self.target_language and self.target_language != "auto" and agent_language != target_language
         )
+
         self.is_transcribing = False
         self.listener_queue = None
         self.stop_event = threading.Event()
@@ -762,7 +828,6 @@ class TranscriptionService:
                 text = content["data"]["translated_utterance"]["text"].strip()
                 print(" "*4, text)
                 
-                # Synthétiser le texte traduit si TTS est disponible
                 if self.tts_service and text:
                     asyncio.create_task(self.tts_service.synthesize_and_queue(text))
                     
@@ -777,7 +842,12 @@ class TranscriptionService:
                 break
     
     async def send_prebuffer_chunks(self, socket: ClientConnection) -> None:
-        """Envoie les chunks du pre-buffer au début de la transcription"""
+        """
+        Send pre-buffer chunks at the beginning of transcription.
+
+        Args:
+            socket (ClientConnection): WebSocket connection to send chunks to.
+        """
         prebuffer_chunks = self.audio_capture.buffer.get_prebuffer_chunks()
         
         if prebuffer_chunks:
@@ -792,7 +862,6 @@ class TranscriptionService:
                     "data": {"chunk": chunk_info['base64']}
                 })
                 await socket.send(json_data)
-                # Petit délai pour ne pas surcharger
                 await asyncio.sleep(0.005)
                 
     async def send_audio_from_buffer(self, socket: ClientConnection) -> None:
@@ -831,13 +900,10 @@ class TranscriptionService:
             async with connect(response["url"]) as websocket:
                 logger.debug("Transcription started with pre-buffer")
                 
-                # 1. D'abord envoyer le pre-buffer
                 await self.send_prebuffer_chunks(websocket)
                 
-                # 2. Démarrer l'enregistrement pour les nouveaux chunks
                 self.audio_capture.buffer.start_recording()
                 
-                # 3. Démarrer les tâches de streaming
                 send_audio_task = asyncio.create_task(self.send_audio_from_buffer(websocket))
                 print_messages_task = asyncio.create_task(self.print_messages_from_socket(websocket))
                 
@@ -879,7 +945,7 @@ class TranscriptionService:
         self.is_transcribing = False
 
 class VADTranscriptionController:
-    def __init__(self, audio_capture: AudioCapture, transcription_service: TranscriptionService, vad_model, silence_timeout: float = 30.0):
+    def __init__(self, audio_capture: AudioCapture, transcription_service: TranscriptionAndVoiceService, vad_model, silence_timeout: float = 30.0):
         self.audio_capture = audio_capture
         self.transcription_service = transcription_service
         self.vad_model = vad_model
@@ -1038,81 +1104,62 @@ class VADTranscriptionController:
 
 
 class GladiaAudioManager:
-    def __init__(self, gladia_key: str, 
+    voice_edge_tts = {
+        "fr": "fr-FR-DenisNeural",
+        "en": "en-US-AriaNeural",
+        "es": "es-ES-AlvaroNeural",
+        "de": "de-DE-ConradNeural"
+    }
+
+    def __init__(self, 
+                 gladia_key: str,
+
                  agent_device: AudioDevice,
+                 phone_device: AudioDevice,
                  agent_language: str = "fr",
-                 target_device: AudioDevice | None = None,
-                 target_language: Optional[str] = "en",
-                 output_device: AudioDevice | None = None,
+                 phone_language: str = "en",
+                 
                  silence_timeout: float = 30.0, 
-                 prebuffer_seconds: float = 5.5,
-                 enable_tts: bool = False,
-                 tts_voice: str = None):
+                 prebuffer_seconds: float = 5.5):
 
         self.audio_buffer = SharedAudioBuffer(prebuffer_seconds=prebuffer_seconds)
         self.audio_capture = AudioCapture(self.audio_buffer, agent_device)
+                
+        self.playback_buffer = SharedAudioPlaybackBuffer()
+        self.audio_playback = AudioPlayback(self.playback_buffer, phone_device)
         
-        # Setup TTS if enabled
-        self.tts_service = None
-        self.audio_playback = None
-        self.playback_buffer = None
+        voice = self.voice_edge_tts.get(phone_language, "en-US-AriaNeural")
         
-        if enable_tts:
-            # Créer le buffer de lecture
-            self.playback_buffer = SharedAudioPlaybackBuffer()
-            
-            # Créer le service de lecture audio
-            self.audio_playback = AudioPlayback(self.playback_buffer, output_device)
-            
-            # Déterminer la voix TTS basée sur la langue cible
-            if tts_voice:
-                voice = tts_voice
-            else:
-                # Voix par défaut selon la langue
-                voice_map = {
-                    "fr": "fr-FR-DenisNeural",
-                    "en": "en-US-AriaNeural",
-                    "es": "es-ES-AlvaroNeural",
-                    "de": "de-DE-ConradNeural"
-                }
-                voice = voice_map.get(target_language, "en-US-AriaNeural")
-            
-            # Créer le service TTS
-            self.tts_service = TTSService(self.audio_playback, voice=voice)
-            logger.info(f"TTS enabled with voice: {voice}")
+        self.tts_service = TTSService(self.audio_playback, voice=voice)
+        logger.debug(f"TTS enabled with voice: {voice}")
         
-        # Créer le service de transcription avec TTS
-        self.transcription_service = TranscriptionService(
-            self.audio_capture, 
+        self.transcription_service = TranscriptionAndVoiceService(
             gladia_key=gladia_key, 
+            audio_capture=self.audio_capture,
+            tts_service=self.tts_service,
             agent_language=agent_language, 
-            target_language=target_language,
-            tts_service=self.tts_service
+            target_language=phone_language,
         )
         
-        self.vad_model = load_silero_vad()
         self.vad_controller = VADTranscriptionController(
-            self.audio_capture, 
-            self.transcription_service, 
-            self.vad_model,
-            silence_timeout
+            audio_capture=self.audio_capture, 
+            transcription_service=self.transcription_service, 
+            vad_model=load_silero_vad(),
+            silence_timeout=silence_timeout
         )
         
     def start_audio_capture(self):
         logger.debug(f"Starting audio capture with {self.audio_buffer.prebuffer_seconds}s pre-buffer...")
         self.audio_capture.start_capture()
         
-        # Démarrer la lecture audio si TTS est activé
         if self.audio_playback:
             self.audio_playback.start_playback()
-            
         return self
         
     def stop_audio_capture(self):
         logger.debug("Stopping audio capture...")
         self.audio_capture.stop_capture()
         
-        # Arrêter la lecture audio si TTS est activé
         if self.audio_playback:
             self.audio_playback.stop_playback()
         
@@ -1147,11 +1194,14 @@ class GladiaAudioManager:
         if self.audio_playback:
             self.audio_playback.cleanup()
 
-def get_audio_devices(filter: list[str] = ["default", "dmix", "to_headset", "from_pc", "dmix_combined", "spdif", "iec958",
+def get_all_audio_devices(filter: list[str] = ["default", "dmix", "to_headset", "from_pc", "dmix_combined", "spdif", "iec958",
                                            "both_outputs", "vdownmix", "upmix", "speex", "speexrate", "samplerate", "lavrate",
                                            "surround40", "front", "pulse", "sysdefault", "a52"]):
     """
     Scans and returns available audio input and output devices.
+
+    Args:
+        filter (list[str]): List of device names to filter out.
 
     Returns:
         tuple: (input_devices, output_devices)
@@ -1189,6 +1239,7 @@ def get_audio_devices(filter: list[str] = ["default", "dmix", "to_headset", "fro
                     sample_rate=int(info['defaultSampleRate']),
                     max_channels=int(info['maxOutputChannels'])
                 )
+                logger.debug(" ".join(list(info.keys())))
                 output_devices.append(device)
                 logger.debug(f"Detected output device: {device}")
     
@@ -1205,6 +1256,61 @@ def get_audio_devices(filter: list[str] = ["default", "dmix", "to_headset", "fro
 
     return input_devices, output_devices
 
+def get_device(device_name: str) -> dict:
+    """
+    Find audio device info by USB device name for both input and output.
+
+    Args:
+        device_name (str): USB device name to search for.
+
+    Returns:
+        dict: Dictionary containing input and output devices
+            - 'input': AudioDevice with input capabilities
+            - 'output': AudioDevice with output capabilities
+
+    Raises:
+        DeviceNotFoundException: If both input and output devices are not found for the same device.
+    """
+    p = pyaudio.PyAudio()
+    
+    matching_devices = []
+    
+    try:
+        for i in range(p.get_device_count()):
+            info = p.get_device_info_by_index(i)
+            device_name_str = str(info['name'])
+            
+            # Check if this device matches our search and has both input and output capabilities
+            if device_name.lower() in device_name_str.lower():
+                has_input = int(info['maxInputChannels']) > 0
+                has_output = int(info['maxOutputChannels']) > 0
+                
+                if has_input and has_output:
+                    # Same device supports both input and output
+                    device = AudioDevice(
+                        index=i,
+                        name=device_name_str,
+                        sample_rate=int(info['defaultSampleRate']),
+                        max_channels=max(int(info['maxInputChannels']), int(info['maxOutputChannels']))
+                    )
+                    matching_devices.append(device)
+                    
+    except Exception as e:
+        logger.error(f"Error while retrieving audio devices: {e}")
+    finally:
+        p.terminate()
+    
+    if not matching_devices:
+        raise DeviceNotFoundException(device_name)
+    
+    # Select the device with the highest sample rate
+    best_device = max(matching_devices, key=lambda x: x.sample_rate)
+    
+    return {
+        'input': best_device,
+        'output': best_device
+    }
+
 def list_audio_devices():
     """
     Logs the list of available audio input and output devices.
@@ -1217,8 +1323,8 @@ def list_audio_devices():
     (list of input devices, list of output devices). Each device should have
     `index`, `name`, `sample_rate`, and `max_channels` attributes.
     """
-    input_devices, output_devices = get_audio_devices()
-    
+    input_devices, output_devices = get_all_audio_devices()
+    print("\n\n\n")
     logger.info("===== INPUT DEVICES (MICROPHONES) =====")
     if not input_devices:
         logger.warning("No input devices found.")
@@ -1235,62 +1341,52 @@ def list_audio_devices():
             logger.info(f"[{device.index:2d}] {device.name}")
             logger.info(f"     Sample rate: {device.sample_rate} Hz, Channels: {device.max_channels}")
 
-async def main(allowed_languages: List[str] = ["auto", "fr", "en", "es", "de"], 
-               silence_timeout: float = 30.0, 
-               prebuffer_seconds: float = 3.0, 
-               debug: bool = False):
+async def main(allowed_languages: List[str] = ["fr", "en", "es", "de"], 
+               silence_timeout: float = 15.0, 
+               prebuffer_seconds: float = 5.5, 
+               debug: bool = True):
+    if debug:
+        logger.setLevel(logging.DEBUG)
+
     parser = argparse.ArgumentParser()
 
-    parser.add_argument("--agent-device",   type=get_device_info,      help="USB device name for agent mic (e.g., 'CM477').")
-    parser.add_argument("--agent-language", choices=allowed_languages, default="auto", help="Language spoken by the agent.")
-    parser.add_argument("--phone-device",   type=get_device_info,      help="USB device name for phone mic.")
-    parser.add_argument("--phone-language", choices=allowed_languages, default="auto", help="Language spoken by the phone.")
-    parser.add_argument("--output-device",  type=get_output_device_info, help="USB device name for audio output (e.g., 'KT USB').")
-    parser.add_argument("--gladia-key",     type=str,                  help="Gladia API key. If omitted, will try the 'GLADIA_KEY' environment variable.")
+    parser.add_argument("--agent-device",   type=get_output_device_info, help="USB device name for agent mic (e.g., 'CM477').")
+    parser.add_argument("--agent-language", choices=allowed_languages, default="fr", help="Language spoken by the agent.")
+    parser.add_argument("--phone-device",   type=get_output_device_info, help="USB device name for phone mic.")
+    parser.add_argument("--phone-language", choices=allowed_languages, default="en", help="Language spoken by the phone.")
+    
+    parser.add_argument("--gladia-key", type=str, help="Gladia API key. If omitted, will try the 'GLADIA_KEY' environment variable.")
     parser.add_argument("--list-devices", action="store_true", help="List all available audio devices and exit.")
-    parser.add_argument("--enable-tts", action="store_true", help="Enable Text-to-Speech for translations.")
-    parser.add_argument("--tts-voice", type=str, help="Edge-TTS voice to use (e.g., 'fr-FR-DenisNeural').")
-
+    
     args = parser.parse_args()
-
+    
     if args.list_devices:
         list_audio_devices()
         return
+    else:
+        if not args.agent_device or not args.phone_device:
+            logger.error(f"--agent-device ({args.agent_device}) and --phone-device ({args.phone_device}) cannot be empty.")
+            return
 
     gladia_key = args.gladia_key or os.getenv("GLADIA_API_KEY")
     gladia_key = is_gladia_key_valid(gladia_key)
-
-    if debug:
-        logger.setLevel(logging.DEBUG)
         
     print(f"===== Gladia Live Transcription + Auto VAD + Pre-buffer ({prebuffer_seconds}s) =====")
     
-    # Si pas de device de sortie spécifié mais TTS activé, utiliser le device d'entrée
-    output_device = args.output_device
-    if args.enable_tts and not output_device and args.agent_device:
-        try:
-            # Essayer de trouver le même device en sortie
-            output_device = get_output_device_info(args.agent_device.name.split(':')[0])
-            logger.info(f"Using same device for output: {output_device.name}")
-        except:
-            logger.warning("Could not find matching output device, will use default")
-    
     manager = GladiaAudioManager(
         gladia_key, 
+
         agent_device=args.agent_device,
+        phone_device=args.phone_device,
         agent_language=args.agent_language, 
-        target_language=args.phone_language,
-        output_device=output_device,
+        phone_language=args.phone_language,
+        
         silence_timeout=silence_timeout, 
         prebuffer_seconds=prebuffer_seconds,
-        enable_tts=args.enable_tts,
-        tts_voice=args.tts_voice
     ).start_audio_capture().start_vad_monitoring()
     
     logger.info('Starting transcription...\n')
-    
-    if args.enable_tts:
-        logger.info(f"TTS enabled - Output device: {output_device.name if output_device else 'default'}")
+    logger.info(f"TTS enabled - Output device: {args.phone_device.name}")
 
     try:
         while True:
