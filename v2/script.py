@@ -3,6 +3,7 @@ import io
 import json
 import time
 import queue
+import atexit
 import base64
 import asyncio
 import logging
@@ -12,7 +13,8 @@ import threading
 from enum import Enum
 from collections import deque
 from datetime import datetime, timedelta
-from typing import Literal, TypedDict, List, Optional
+from logging.handlers import MemoryHandler
+from typing import Literal, TypedDict, List
 
 import torch
 import pyaudio
@@ -25,13 +27,107 @@ from websockets.asyncio.client import ClientConnection, connect
 from silero_vad import get_speech_timestamps, load_silero_vad
 warnings.filterwarnings("ignore", message="Sampling rate is a multiply of 16000")
 
+log_capture_string = io.StringIO()
+log_memory_handler = None
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(levelname)s:     %(asctime)s - %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
-)
-logger = logging.getLogger(__name__)
+class AlignedFormatter(logging.Formatter):
+    """
+    Format of logs like FastAPI.
+    """
+    COLORS = {
+        'DEBUG': '\033[36m',
+        'INFO': '\033[32m',
+        'WARNING': '\033[33m',
+        'ERROR': '\033[31m',
+        'CRITICAL': '\033[35m',
+    }
+    RESET = '\033[0m'
+    
+    def __init__(self, colored: bool = True):
+        super().__init__()
+        self.colored = colored
+    
+    def format(self, record):
+        level_name = f"{record.levelname:<8}"
+        
+        timestamp = self.formatTime(record, "%Y-%m-%d %H:%M:%S")
+        
+        if self.colored:
+            color = self.COLORS.get(record.levelname, '')
+            level_colored = f"{color}{level_name}{self.RESET}"
+            return f"{level_colored} {timestamp} - {record.getMessage()}"
+        else:
+            return f"{level_name} {timestamp} - {record.getMessage()}"
+
+def setup_logging_with_capture(debug_mode: bool = False):
+    """
+    Configure le logging avec capture en mémoire pour sauvegarde ultérieure.
+    
+    Args:
+        debug_mode (bool): Active le mode debug si True
+    """
+    global log_memory_handler, log_capture_string
+    
+    log_level = logging.DEBUG if debug_mode else logging.INFO
+    
+    console_handler = logging.StreamHandler()
+    console_formatter = AlignedFormatter(colored=True)
+    console_handler.setFormatter(console_formatter)
+    
+    log_capture_string = io.StringIO()
+    memory_handler = logging.StreamHandler(log_capture_string)
+    memory_formatter = AlignedFormatter(colored=False)
+    memory_handler.setFormatter(memory_formatter)
+
+    logger = logging.getLogger()
+    logger.setLevel(log_level)
+    logger.addHandler(console_handler)
+    logger.addHandler(memory_handler)
+    
+    return logger
+
+def save_logs_to_file():
+    """
+    Sauvegarde les logs capturés dans un fichier avec la date/heure d'arrêt.
+    """
+    global log_capture_string
+    
+    if log_capture_string is None:
+        return
+        
+    try:
+        # Génération du nom de fichier avec timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"gladia_logs_{timestamp}.txt"
+        
+        # Récupération du contenu des logs
+        log_content = log_capture_string.getvalue()
+        
+        if log_content.strip():  # Seulement si il y a des logs
+            # Création du dossier logs s'il n'existe pas
+            logs_dir = "logs"
+            if not os.path.exists(logs_dir):
+                os.makedirs(logs_dir)
+            
+            filepath = os.path.join(logs_dir, filename)
+            
+            # Écriture des logs dans le fichier
+            with open(filepath, 'w', encoding='utf-8') as f:
+                f.write(f"=== GLADIA TRANSCRIPTION LOGS ===\n")
+                f.write(f"Session terminée le: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"{'='*50}\n\n")
+                f.write(log_content)
+            
+            print(f"\n📁 Logs sauvegardés dans: {filepath}")
+        else:
+            print("\n📁 Aucun log à sauvegarder.")
+            
+    except Exception as e:
+        print(f"\n❌ Erreur lors de la sauvegarde des logs: {e}")
+
+
+logger = setup_logging_with_capture(False)
+
 
 
 class InvalidGladiaKeyException(Exception):
@@ -43,11 +139,6 @@ class DeviceNotFoundException(Exception):
     """Exception raised when the specified USB device is not found."""
     def __init__(self, device: str):
         message = f"The device '{device}' was not found in the USB devices list."
-        super().__init__(message)
-
-class VADSetupException(Exception):
-    """Exception raised when the real-time VAD setup fails."""
-    def __init__(self, message="Failed to initialize real-time voice activity detection (VAD)."):
         super().__init__(message)
 
 class AudioStreamStartException(Exception):
@@ -230,14 +321,10 @@ class AudioCapture:
         self.FORMAT = pyaudio.paInt16
         self.FRAMES_PER_BUFFER = 3200
         
-        if self.device:
-            self.SAMPLE_RATE = self._find_best_sample_rate_for_device()
-            logger.info(f"Using device: {self.device.name}")
-            logger.info(f"Device default rate: {self.device.sample_rate} Hz")
-            logger.info(f"Selected rate: {self.SAMPLE_RATE} Hz")
-        else:
-            self.SAMPLE_RATE = self._find_best_sample_rate_auto()
-            logger.warning("No specific device provided, using auto-detection")
+        self.SAMPLE_RATE = self._find_best_sample_rate_for_device()
+        logger.debug(f"Using device: {self.device.name}")
+        logger.debug(f"Device default rate: {self.device.sample_rate} Hz")
+        logger.debug(f"Selected rate: {self.SAMPLE_RATE} Hz")
         
     def _find_best_sample_rate_for_device(self):
         """
@@ -252,12 +339,12 @@ class AudioCapture:
         device_rate = int(self.device.sample_rate)
         if device_rate in vad_compatible_rates:
             if self._test_sample_rate(device_rate, self.device.index):
-                logger.info(f"Using device default rate (VAD-compatible): {device_rate} Hz")
+                logger.debug(f"Using device default rate (VAD-compatible): {device_rate} Hz")
                 return device_rate
         
         for rate in vad_compatible_rates:
             if self._test_sample_rate(rate, self.device.index):
-                logger.info(f"Using VAD-compatible rate: {rate} Hz")
+                logger.debug(f"Using VAD-compatible rate: {rate} Hz")
                 return rate
         
         if self._test_sample_rate(device_rate, self.device.index):
@@ -270,34 +357,6 @@ class AudioCapture:
                 return rate
                 
         logger.error(f"No supported sample rate found for device {self.device.name}")
-        return 16000
-    
-    def _find_best_sample_rate_auto(self):
-        """
-        Automatically find a sample rate (fallback).
-
-        Returns:
-            int: Best supported sample rate for auto-detected device.
-        """
-        vad_compatible_rates = [16000, 8000, 32000, 48000]
-        standard_rates = [44100, 22050]
-        
-        try:
-            default_device = self.p.get_default_input_device_info()
-            device_index = default_device['index']
-        except:
-            device_index = self._get_first_input_device()
-        
-        for rate in vad_compatible_rates:
-            if self._test_sample_rate(rate, device_index):
-                logger.info(f"Auto-detected VAD-compatible rate: {rate} Hz")
-                return rate
-        
-        for rate in standard_rates:
-            if self._test_sample_rate(rate, device_index):
-                logger.warning(f"Auto-detected standard rate: {rate} Hz (will need resampling)")
-                return rate
-                
         return 16000
     
     def _test_sample_rate(self, rate, device_index):
@@ -362,10 +421,10 @@ class AudioCapture:
             logger.debug(f"Opening audio stream: {config}")
             self.stream = self.p.open(**config)
             device_name = self.device.name if self.device else "default"
-            logger.info(f"✓ Audio stream opened successfully")
-            logger.info(f"  Device: {device_name}")
-            logger.info(f"  Sample rate: {self.SAMPLE_RATE} Hz")
-            logger.info(f"  Channels: {self.CHANNELS}")
+            logger.debug(f"Audio stream opened successfully")
+            logger.debug(f"Device: {device_name}")
+            logger.debug(f"Sample rate: {self.SAMPLE_RATE} Hz")
+            logger.debug(f"Channels: {self.CHANNELS}")
             
         except Exception as e:
             device_name = self.device.name if self.device else "auto-detect"
@@ -437,8 +496,8 @@ class AudioPlayback:
         self.FRAMES_PER_BUFFER = 512
         
         self.SAMPLE_RATE = self._find_best_output_sample_rate()
-        logger.info(f"Using output device: {self.device.name}")
-        logger.info(f"Selected output sample rate: {self.SAMPLE_RATE} Hz")
+        logger.debug(f"Using output device: {self.device.name}")
+        logger.debug(f"Selected output sample rate: {self.SAMPLE_RATE} Hz")
     
     def _find_best_output_sample_rate(self):
         """
@@ -462,50 +521,6 @@ class AudioPlayback:
         
         logger.warning(f"No preferred sample rate found, using device default: {device_rate} Hz")
         return device_rate
-    
-    def _find_best_output_sample_rate_auto(self):
-        """
-        Automatically find a sample rate for the default device.
-
-        Returns:
-            int: Best supported sample rate for the default output device.
-        """
-        preferred_rates = [22050, 44100, 48000, 16000, 24000, 32000]
-        
-        try:
-            default_device = self.p.get_default_output_device_info()
-            device_index = default_device['index']
-            device_rate = int(default_device['defaultSampleRate'])
-            
-            if self._test_output_sample_rate(device_rate, device_index):
-                return device_rate
-        except:
-            device_index = self._get_first_output_device()
-        
-        for rate in preferred_rates:
-            if self._test_output_sample_rate(rate, device_index):
-                return rate
-        
-        return 44100
-    
-    def _get_first_output_device(self):
-        """
-        Find the first available output device.
-
-        Returns:
-            int: Index of the first available output device.
-
-        Raises:
-            Exception: If no output device is found.
-        """
-        for i in range(self.p.get_device_count()):
-            try:
-                info = self.p.get_device_info_by_index(i)
-                if info['maxOutputChannels'] > 0:
-                    return i
-            except:
-                continue
-        raise Exception("No output device found")
     
     def _test_output_sample_rate(self, rate, device_index):
         """
@@ -549,7 +564,7 @@ class AudioPlayback:
         try:
             self.stream = self.p.open(**config)
             device_name = self.device.name if self.device else "default"
-            logger.info(f"✓ Audio playback stream opened successfully on {device_name}")
+            logger.debug(f"Audio playback stream opened successfully on {device_name}")
             
         except Exception as e:
             device_name = self.device.name if self.device else "auto-detect"
@@ -745,7 +760,7 @@ class TranscriptionAndVoiceService:
             content = json.loads(message)
             if self.is_transcribing and content["type"] == "translation":
                 text = content["data"]["translated_utterance"]["text"].strip()
-                print(" "*4, text)
+                logger.info(f"[Transcription]: {text}")
                 
                 if self.tts_service and text:
                     asyncio.create_task(self.tts_service.synthesize_and_queue(text))
@@ -1008,7 +1023,7 @@ class VADTranscriptionController:
     def _on_silence_timeout(self):
         with self.state_lock:
             if self.state == TranscriptionState.WAITING_SILENCE:
-                logger.info("Silence timeout reached - Stopping transcription")
+                logger.info(f"No Voice Detected Since {self.silence_timeout}s - Standing by")
                 self.state = TranscriptionState.IDLE
                 self.transcription_service.stop_transcription()
                 
@@ -1246,25 +1261,26 @@ def list_audio_devices():
             logger.info(f"[{device.index:2d}] {device.name}")
             logger.info(f"     Sample rate: {device.sample_rate} Hz, Output channels: {device.max_output_channels}")
 
+atexit.register(save_logs_to_file)
+
 async def main(allowed_languages: List[str] = ["fr", "en", "es", "de"], 
                silence_timeout: float = 15.0, 
-               prebuffer_seconds: float = 5.5, 
-               debug: bool = True):
-    if debug:
-        logger.setLevel(logging.DEBUG)
+               prebuffer_seconds: float = 5.5):
 
     parser = argparse.ArgumentParser()
 
+    parser.add_argument("--gladia-key", type=str, help="Gladia API key. If omitted, will try the 'GLADIA_KEY' environment variable.")
+    
     parser.add_argument("--agent-device",   type=get_device_info, help="USB device name for agent mic (e.g., 'CM477').")
     parser.add_argument("--agent-language", choices=allowed_languages, default="fr", help="Language spoken by the agent.")
     parser.add_argument("--phone-device",   type=get_device_info, help="USB device name for phone mic.")
     parser.add_argument("--phone-language", choices=allowed_languages, default="en", help="Language spoken by the phone.")
     
-    parser.add_argument("--gladia-key", type=str, help="Gladia API key. If omitted, will try the 'GLADIA_KEY' environment variable.")
     parser.add_argument("--list-devices", action="store_true", help="List all available audio devices and exit.")
-    
+    parser.add_argument("--debug", action="store_true", help="Active or not the debug logs.", default=False)
+
     args = parser.parse_args()
-    
+
     if args.list_devices:
         list_audio_devices()
         return
@@ -1290,8 +1306,8 @@ async def main(allowed_languages: List[str] = ["fr", "en", "es", "de"],
         prebuffer_seconds=prebuffer_seconds,
     ).start_audio_capture().start_vad_monitoring()
     
+    logger.info(f"TTS enabled - Output device: {args.phone_device.name} | Input device: {args.agent_device.name}")
     logger.info('Starting transcription...\n')
-    logger.info(f"TTS enabled - Output device: {args.phone_device.name}")
 
     try:
         while True:

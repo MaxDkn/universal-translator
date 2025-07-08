@@ -1,0 +1,32 @@
+=== GLADIA TRANSCRIPTION LOGS ===
+Session terminée le: 2025-07-08 12:02:45
+==================================================
+
+DEBUG    2025-07-08 12:02:07 - Using selector: EpollSelector
+DEBUG    2025-07-08 12:02:07 - Starting new HTTPS connection (1): api.gladia.io:443
+DEBUG    2025-07-08 12:02:08 - https://api.gladia.io:443 "GET /v2/pre-recorded HTTP/1.1" 200 25401
+DEBUG    2025-07-08 12:02:08 - Sample rate 16000 test failed on device 0: ('Invalid sample rate', -9997)
+DEBUG    2025-07-08 12:02:08 - Sample rate 8000 test failed on device 0: ('Invalid sample rate', -9997)
+DEBUG    2025-07-08 12:02:08 - Sample rate 32000 test failed on device 0: ('Invalid sample rate', -9997)
+DEBUG    2025-07-08 12:02:08 - Using VAD-compatible rate: 48000 Hz
+DEBUG    2025-07-08 12:02:08 - Using device: KT USB Audio: - (hw:0,0)
+DEBUG    2025-07-08 12:02:08 - Device default rate: 44100 Hz
+DEBUG    2025-07-08 12:02:08 - Selected rate: 48000 Hz
+DEBUG    2025-07-08 12:02:08 - Device default rate 44100 Hz is supported
+DEBUG    2025-07-08 12:02:08 - Using output device: CM477-30757: USB Audio (hw:1,0)
+DEBUG    2025-07-08 12:02:08 - Selected output sample rate: 44100 Hz
+DEBUG    2025-07-08 12:02:08 - TTS enabled with voice: en-US-AriaNeural
+INFO     2025-07-08 12:02:08 - Translation enabled - target language: en
+DEBUG    2025-07-08 12:02:08 - Starting audio capture with 5.5s pre-buffer...
+DEBUG    2025-07-08 12:02:08 - Opening audio stream: {'format': 8, 'channels': 1, 'rate': 48000, 'input': True, 'frames_per_buffer': 3200, 'input_device_index': 0}
+DEBUG    2025-07-08 12:02:08 - Audio stream opened successfully
+DEBUG    2025-07-08 12:02:08 - Device: KT USB Audio: - (hw:0,0)
+DEBUG    2025-07-08 12:02:08 - Sample rate: 48000 Hz
+DEBUG    2025-07-08 12:02:08 - Channels: 1
+DEBUG    2025-07-08 12:02:08 - Audio playback stream opened successfully on CM477-30757: USB Audio (hw:1,0)
+DEBUG    2025-07-08 12:02:08 - VAD monitoring started
+INFO     2025-07-08 12:02:08 - TTS enabled - Output device: CM477-30757: USB Audio (hw:1,0) | Input device: KT USB Audio: - (hw:0,0)
+INFO     2025-07-08 12:02:08 - Starting transcription...
+
+DEBUG    2025-07-08 12:02:45 - VAD monitoring stopped
+INFO     2025-07-08 12:02:45 - Goodbye!

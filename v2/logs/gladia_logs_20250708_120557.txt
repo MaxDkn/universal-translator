@@ -1,0 +1,23 @@
+=== GLADIA TRANSCRIPTION LOGS ===
+Session terminée le: 2025-07-08 12:05:57
+==================================================
+
+INFO     2025-07-08 12:05:06 - Translation enabled - target language: en
+INFO     2025-07-08 12:05:06 - TTS enabled - Output device: CM477-30757: USB Audio (hw:1,0) | Input device: CM477-30757: USB Audio (hw:1,0)
+INFO     2025-07-08 12:05:06 - Starting transcription...
+
+INFO     2025-07-08 12:05:14 - [Transcription]: Transcription.
+INFO     2025-07-08 12:05:18 - [Transcription]: Transcription.
+INFO     2025-07-08 12:05:21 - [Transcription]: Transcription.
+INFO     2025-07-08 12:05:25 - [Transcription]: Transcription.
+INFO     2025-07-08 12:05:25 - No Voice Detected Since 15.0s - Standing by
+ERROR    2025-07-08 12:05:35 - Unclosed client session
+client_session: <aiohttp.client.ClientSession object at 0x7ffec4487150>
+ERROR    2025-07-08 12:05:35 - Task was destroyed but it is pending!
+task: <Task pending name='Task-15' coro=<TTSService.synthesize_and_queue() done, defined at /home/gladia/Documents/universal-translation/v2/script.py:623> wait_for=<Future pending cb=[Task.task_wakeup()]>>
+INFO     2025-07-08 12:05:38 - [Transcription]: Does it work?
+INFO     2025-07-08 12:05:42 - [Transcription]: Does it work?
+INFO     2025-07-08 12:05:45 - [Transcription]: Does it work?
+INFO     2025-07-08 12:05:48 - [Transcription]: Does it work?
+INFO     2025-07-08 12:05:51 - No Voice Detected Since 15.0s - Standing by
+INFO     2025-07-08 12:05:57 - Goodbye!
