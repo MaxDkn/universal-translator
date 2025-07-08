@@ -89,17 +89,18 @@ class StreamingConfiguration(TypedDict):
 
 
 class AudioDevice:
-    def __init__(self, index: int, name: str, sample_rate: int, max_channels: int):
+    def __init__(self, index: int, name: str, sample_rate: int, max_input_channels: int, max_output_channels: int):
         self.index = index
         self.name = name
         self.sample_rate = sample_rate
-        self.max_channels = max_channels
+        self.max_input_channels = max_input_channels
+        self.max_output_channels = max_output_channels
 
     def __str__(self):
         return self.name
 
     def __repr__(self):
-        return f"AudioDevice(name='{self.name}', index={self.index}, sample_rate={self.sample_rate}, max_channels={self.max_channels})"
+        return f"AudioDevice(name='{self.name}', index={self.index}, sample_rate={self.sample_rate}, max_input_channels={self.max_input_channels}, max_output_channels={self.max_output_channels})"
 
 
 def is_gladia_key_valid(key: str | None, url: str = "https://api.gladia.io/v2/pre-recorded") -> str:
@@ -122,83 +123,6 @@ def is_gladia_key_valid(key: str | None, url: str = "https://api.gladia.io/v2/pr
     if not response.ok:
         raise InvalidGladiaKeyException()
     return key
-
-def get_device_info(device_name: str) -> AudioDevice:
-    """
-    Find audio device info by USB device name with fallback options.
-
-    Args:
-        device_name (str): USB device name to search for.
-
-    Returns:
-        AudioDevice: Audio device with the highest sample rate among candidates.
-
-    Raises:
-        DeviceNotFoundException: If no matching device is found.
-    """
-    p = pyaudio.PyAudio()
-    
-    candidates = []
-    
-    for i in range(p.get_device_count()):
-        try:
-            device_info = p.get_device_info_by_index(i)
-            if int(device_info['maxInputChannels']) > 0:
-                if device_name.lower() in str(device_info['name']).lower():
-                    candidates.append(AudioDevice(
-                        index=i,
-                        name=str(device_info['name']),
-                        sample_rate=int(device_info['defaultSampleRate']),
-                        max_channels=int(device_info['maxInputChannels'])
-                    ))
-        except Exception:
-            continue
-    
-    p.terminate()
-    
-    if not candidates:
-        raise DeviceNotFoundException(device_name)
-    
-    return max(candidates, key=lambda x: x.sample_rate)
-
-def get_output_device_info(device_name: str) -> AudioDevice:
-    """
-    Find audio output device info by USB device name.
-
-    Args:
-        device_name (str): USB device name to search for.
-
-    Returns:
-        AudioDevice: Output audio device with the highest sample rate among candidates.
-
-    Raises:
-        DeviceNotFoundException: If no matching output device is found.
-    """
-    p = pyaudio.PyAudio()
-    
-    candidates = []
-    
-    for i in range(p.get_device_count()):
-        try:
-            device_info = p.get_device_info_by_index(i)
-            if int(device_info['maxOutputChannels']) > 0:
-                if device_name.lower() in str(device_info['name']).lower():
-                    candidates.append(AudioDevice(
-                        index=i,
-                        name=str(device_info['name']),
-                        sample_rate=int(device_info['defaultSampleRate']),
-                        max_channels=int(device_info['maxOutputChannels'])
-                    ))
-        except Exception:
-            continue
-    
-    p.terminate()
-    
-    if not candidates:
-        raise DeviceNotFoundException(device_name)
-    
-    return max(candidates, key=lambda x: x.sample_rate)
-
 
 class SharedAudioBuffer:
     def __init__(self, max_chunks: int = 1000, prebuffer_seconds: float = 3.0):
@@ -294,7 +218,7 @@ class SharedAudioPlaybackBuffer:
             self.buffer.clear()
 
 class AudioCapture:
-    def __init__(self, buffer: SharedAudioBuffer, device: AudioDevice = None):
+    def __init__(self, buffer: SharedAudioBuffer, device: AudioDevice):
         self.buffer = buffer
         self.device = device
         self.p = pyaudio.PyAudio()
@@ -500,7 +424,7 @@ class AudioCapture:
             logger.warning(f"Error terminating PyAudio: {e}")
 
 class AudioPlayback:
-    def __init__(self, buffer: SharedAudioPlaybackBuffer, device: AudioDevice = None):
+    def __init__(self, buffer: SharedAudioPlaybackBuffer, device: AudioDevice):
         self.buffer = buffer
         self.device = device
         self.p = pyaudio.PyAudio()
@@ -512,13 +436,9 @@ class AudioPlayback:
         self.FORMAT = pyaudio.paInt16
         self.FRAMES_PER_BUFFER = 512
         
-        if self.device:
-            self.SAMPLE_RATE = self._find_best_output_sample_rate()
-            logger.info(f"Using output device: {self.device.name}")
-            logger.info(f"Selected output sample rate: {self.SAMPLE_RATE} Hz")
-        else:
-            self.SAMPLE_RATE = self._find_best_output_sample_rate_auto()
-            logger.info(f"Using default output device with sample rate: {self.SAMPLE_RATE} Hz")
+        self.SAMPLE_RATE = self._find_best_output_sample_rate()
+        logger.info(f"Using output device: {self.device.name}")
+        logger.info(f"Selected output sample rate: {self.SAMPLE_RATE} Hz")
     
     def _find_best_output_sample_rate(self):
         """
@@ -695,7 +615,7 @@ class TTSService:
         if not text.strip():
             return
             
-        logger.info(f"TTS synthesis [{self.voice}]: {text[:50]}...")
+        logger.debug(f"TTS synthesis [{self.voice}]: {text[:50]}...")
         
         try:
             communicate = edge_tts.Communicate(text=text, voice=self.voice)
@@ -712,7 +632,6 @@ class TTSService:
             converted_audio = self._convert_audio_format(audio_data)
             if converted_audio:
                 self._queue_audio_chunks(converted_audio)
-                logger.info("TTS synthesis completed")
             else:
                 logger.error("Audio conversion failed")
                 
@@ -1212,7 +1131,8 @@ def get_all_audio_devices(filter: list[str] = ["default", "dmix", "to_headset", 
         - index (int): device index in PyAudio
         - name (str): device name
         - sample_rate (int): default sample rate
-        - max_channels (int): number of input/output channels
+        - max_input_channels (int): number of input channels
+        - max_output_channels (int): number of output channels
     """
     p = pyaudio.PyAudio()
     input_devices = []
@@ -1227,7 +1147,8 @@ def get_all_audio_devices(filter: list[str] = ["default", "dmix", "to_headset", 
                     index=i,
                     name=str(info['name']),
                     sample_rate=int(info['defaultSampleRate']),
-                    max_channels=int(info['maxInputChannels'])
+                    max_input_channels=int(info['maxInputChannels']),
+                    max_output_channels=int(info['maxOutputChannels'])
                 )
                 input_devices.append(device)
                 logger.debug(f"Detected input device: {device}")
@@ -1237,9 +1158,9 @@ def get_all_audio_devices(filter: list[str] = ["default", "dmix", "to_headset", 
                     index=i,
                     name=str(info['name']),
                     sample_rate=int(info['defaultSampleRate']),
-                    max_channels=int(info['maxOutputChannels'])
+                    max_input_channels=int(info['maxInputChannels']),
+                    max_output_channels=int(info['maxOutputChannels'])
                 )
-                logger.debug(" ".join(list(info.keys())))
                 output_devices.append(device)
                 logger.debug(f"Detected output device: {device}")
     
@@ -1256,60 +1177,44 @@ def get_all_audio_devices(filter: list[str] = ["default", "dmix", "to_headset", 
 
     return input_devices, output_devices
 
-def get_device(device_name: str) -> dict:
+def get_device_info(device_name: str) -> AudioDevice:
     """
-    Find audio device info by USB device name for both input and output.
+    Find audio device info by USB device name with fallback options.
 
     Args:
         device_name (str): USB device name to search for.
 
     Returns:
-        dict: Dictionary containing input and output devices
-            - 'input': AudioDevice with input capabilities
-            - 'output': AudioDevice with output capabilities
+        AudioDevice: Audio device with the highest sample rate among candidates.
 
     Raises:
-        DeviceNotFoundException: If both input and output devices are not found for the same device.
+        DeviceNotFoundException: If no matching device is found.
     """
     p = pyaudio.PyAudio()
     
-    matching_devices = []
+    candidates = []
     
-    try:
-        for i in range(p.get_device_count()):
-            info = p.get_device_info_by_index(i)
-            device_name_str = str(info['name'])
-            
-            # Check if this device matches our search and has both input and output capabilities
-            if device_name.lower() in device_name_str.lower():
-                has_input = int(info['maxInputChannels']) > 0
-                has_output = int(info['maxOutputChannels']) > 0
-                
-                if has_input and has_output:
-                    # Same device supports both input and output
-                    device = AudioDevice(
+    for i in range(p.get_device_count()):
+        try:
+            device_info = p.get_device_info_by_index(i)
+            if int(device_info['maxInputChannels']) > 0:
+                if device_name.lower() in str(device_info['name']).lower():
+                    candidates.append(AudioDevice(
                         index=i,
-                        name=device_name_str,
-                        sample_rate=int(info['defaultSampleRate']),
-                        max_channels=max(int(info['maxInputChannels']), int(info['maxOutputChannels']))
-                    )
-                    matching_devices.append(device)
-                    
-    except Exception as e:
-        logger.error(f"Error while retrieving audio devices: {e}")
-    finally:
-        p.terminate()
+                        name=str(device_info['name']),
+                        sample_rate=int(device_info['defaultSampleRate']),
+                        max_input_channels=int(device_info['maxInputChannels']),
+                        max_output_channels=int(device_info['maxOutputChannels'])
+                    ))
+        except Exception:
+            continue
     
-    if not matching_devices:
+    p.terminate()
+    
+    if not candidates:
         raise DeviceNotFoundException(device_name)
     
-    # Select the device with the highest sample rate
-    best_device = max(matching_devices, key=lambda x: x.sample_rate)
-    
-    return {
-        'input': best_device,
-        'output': best_device
-    }
+    return max(candidates, key=lambda x: x.sample_rate)
 
 def list_audio_devices():
     """
@@ -1319,19 +1224,19 @@ def list_audio_devices():
     (speakers) audio devices, including their index, name, sample rate, and number 
     of channels.
 
-    Requires a `get_audio_devices()` function that returns a tuple:
+    Requires a `get_all_audio_devices()` function that returns a tuple:
     (list of input devices, list of output devices). Each device should have
-    `index`, `name`, `sample_rate`, and `max_channels` attributes.
+    `index`, `name`, `sample_rate`, `max_input_channels`, and `max_output_channels` attributes.
     """
     input_devices, output_devices = get_all_audio_devices()
-    print("\n\n\n")
+    
     logger.info("===== INPUT DEVICES (MICROPHONES) =====")
     if not input_devices:
         logger.warning("No input devices found.")
     else:
         for device in input_devices:
             logger.info(f"[{device.index:2d}] {device.name}")
-            logger.info(f"     Sample rate: {device.sample_rate} Hz, Channels: {device.max_channels}")
+            logger.info(f"     Sample rate: {device.sample_rate} Hz, Input channels: {device.max_input_channels}")
     
     logger.info("====== OUTPUT DEVICES (SPEAKERS) ======")
     if not output_devices:
@@ -1339,7 +1244,7 @@ def list_audio_devices():
     else:
         for device in output_devices:
             logger.info(f"[{device.index:2d}] {device.name}")
-            logger.info(f"     Sample rate: {device.sample_rate} Hz, Channels: {device.max_channels}")
+            logger.info(f"     Sample rate: {device.sample_rate} Hz, Output channels: {device.max_output_channels}")
 
 async def main(allowed_languages: List[str] = ["fr", "en", "es", "de"], 
                silence_timeout: float = 15.0, 
@@ -1350,9 +1255,9 @@ async def main(allowed_languages: List[str] = ["fr", "en", "es", "de"],
 
     parser = argparse.ArgumentParser()
 
-    parser.add_argument("--agent-device",   type=get_output_device_info, help="USB device name for agent mic (e.g., 'CM477').")
+    parser.add_argument("--agent-device",   type=get_device_info, help="USB device name for agent mic (e.g., 'CM477').")
     parser.add_argument("--agent-language", choices=allowed_languages, default="fr", help="Language spoken by the agent.")
-    parser.add_argument("--phone-device",   type=get_output_device_info, help="USB device name for phone mic.")
+    parser.add_argument("--phone-device",   type=get_device_info, help="USB device name for phone mic.")
     parser.add_argument("--phone-language", choices=allowed_languages, default="en", help="Language spoken by the phone.")
     
     parser.add_argument("--gladia-key", type=str, help="Gladia API key. If omitted, will try the 'GLADIA_KEY' environment variable.")
