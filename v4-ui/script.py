@@ -93,7 +93,6 @@ async def toggle(request: Request):
     
     return RedirectResponse(url="/launch", status_code=303)
 
-# Add startup log
 logging.info("=== Application started ===")
 
 if __name__ == "__main__":
