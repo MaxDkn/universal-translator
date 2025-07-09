@@ -1,9 +1,0 @@
-=== GLADIA TRANSCRIPTION LOGS ===
-Session terminée le: 2025-07-08 12:03:00
-==================================================
-
-INFO     2025-07-08 12:02:52 - Translation enabled - target language: en
-INFO     2025-07-08 12:02:52 - TTS enabled - Output device: CM477-30757: USB Audio (hw:1,0) | Input device: KT USB Audio: - (hw:0,0)
-INFO     2025-07-08 12:02:52 - Starting transcription...
-
-INFO     2025-07-08 12:03:00 - Goodbye!

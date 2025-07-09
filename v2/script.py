@@ -32,7 +32,15 @@ log_memory_handler = None
 
 class AlignedFormatter(logging.Formatter):
     """
-    Format of logs like FastAPI.
+    Custom logging formatter that mimics FastAPI's log format with colored output.
+    
+    This formatter provides aligned log levels and colored console output for better
+    readability during development and debugging.
+    
+    Attributes:
+        COLORS (dict): Mapping of log levels to ANSI color codes
+        RESET (str): ANSI reset code to clear color formatting
+        colored (bool): Whether to apply color formatting to output
     """
     COLORS = {
         'DEBUG': '\033[36m',
@@ -44,12 +52,26 @@ class AlignedFormatter(logging.Formatter):
     RESET = '\033[0m'
     
     def __init__(self, colored: bool = True):
+        """
+        Initialize the formatter.
+        
+        Args:
+            colored (bool): Enable colored output. Defaults to True.
+        """
         super().__init__()
         self.colored = colored
     
     def format(self, record):
-        level_name = f"{record.levelname:<8}"
+        """
+        Format a log record with aligned levels and optional coloring.
         
+        Args:
+            record (LogRecord): The log record to format
+            
+        Returns:
+            str: Formatted log message string
+        """
+        level_name = f"{record.levelname:<8}"
         timestamp = self.formatTime(record, "%Y-%m-%d %H:%M:%S")
         
         if self.colored:
@@ -59,16 +81,61 @@ class AlignedFormatter(logging.Formatter):
         else:
             return f"{level_name} {timestamp} - {record.getMessage()}"
 
-def setup_logging_with_capture(debug_mode: bool = False):
+def create_styled_header():
     """
-    Configure le logging avec capture en mémoire pour sauvegarde ultérieure.
+    Create a beautifully styled header for log files with rounded corners.
+    
+    Returns:
+        str: Formatted header string with box drawing characters
+    """
+    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    
+    # Box drawing characters for rounded corners
+    top_left = "╭"
+    top_right = "╮"
+    bottom_left = "╰"
+    bottom_right = "╯"
+    horizontal = "─"
+    vertical = "│"
+    
+    # Calculate box width
+    title = "TRANSCRIPTION LOGS"
+    session_line = f"Session terminated on: {timestamp}"
+    gladia_line = "Script made by Gladia"
+    author_line = "Max Deckmyn"
+    
+    box_width = max(len(title), len(session_line), len(gladia_line) + len(author_line) + 2) + 4  # +4 for padding
+    
+    # Create the styled box
+    header_lines = [
+        f"{top_left}{horizontal * (box_width - 2)}{top_right}",
+        f"{vertical} {title:^{box_width - 4}} {vertical}",
+        f"{vertical} {session_line:^{box_width - 4}} {vertical}",
+        f"{vertical} {gladia_line:<{box_width - 4 - len(author_line)}}{author_line:>{len(author_line)}} {vertical}",
+        f"{bottom_left}{horizontal * (box_width - 2)}{bottom_right}",
+        ""  # Empty line after box
+    ]
+    
+    return "\n".join(header_lines)
+
+def setup_logging_with_capture():
+    """
+    Configure logging system with both console output and in-memory capture.
+    
+    Sets up dual logging handlers: one for console output with colors and another
+    for capturing logs in memory for later file persistence.
     
     Args:
-        debug_mode (bool): Active le mode debug si True
+        debug_mode (bool): Enable debug level logging. Defaults to False (INFO level).
+        
+    Returns:
+        logging.Logger: Configured root logger instance
+        
+    Global Variables Modified:
+        log_memory_handler: Handler for memory-based log capture
+        log_capture_string: StringIO object containing captured logs
     """
     global log_memory_handler, log_capture_string
-    
-    log_level = logging.DEBUG if debug_mode else logging.INFO
     
     console_handler = logging.StreamHandler()
     console_formatter = AlignedFormatter(colored=True)
@@ -80,7 +147,12 @@ def setup_logging_with_capture(debug_mode: bool = False):
     memory_handler.setFormatter(memory_formatter)
 
     logger = logging.getLogger()
-    logger.setLevel(log_level)
+    logging.getLogger('websockets').setLevel(logging.WARNING)
+    logging.getLogger('websockets.client').setLevel(logging.WARNING)
+    logging.getLogger('websockets.asyncio.client').setLevel(logging.WARNING)
+    logging.getLogger('pydub.converter').setLevel(logging.WARNING)
+    logging.getLogger('pydub.utils').setLevel(logging.WARNING)
+    logging.getLogger('subprocess').setLevel(logging.ERROR)
     logger.addHandler(console_handler)
     logger.addHandler(memory_handler)
     
@@ -88,7 +160,22 @@ def setup_logging_with_capture(debug_mode: bool = False):
 
 def save_logs_to_file():
     """
-    Sauvegarde les logs capturés dans un fichier avec la date/heure d'arrêt.
+    Save captured logs to a timestamped file in the logs directory.
+    
+    Creates a logs directory if it doesn't exist and saves all captured log
+    content to a file with format 'gladia_logs_YYYYMMDD_HHMMSS.txt'.
+    Only saves if there is actual log content to write.
+    
+    Global Variables Used:
+        log_capture_string: StringIO object containing captured logs
+        
+    Side Effects:
+        - Creates 'logs' directory if it doesn't exist
+        - Writes log file to filesystem
+        - Prints status message to console
+        
+    Raises:
+        Catches and prints any exceptions that occur during file operations
     """
     global log_capture_string
     
@@ -96,38 +183,31 @@ def save_logs_to_file():
         return
         
     try:
-        # Génération du nom de fichier avec timestamp
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"gladia_logs_{timestamp}.txt"
         
-        # Récupération du contenu des logs
         log_content = log_capture_string.getvalue()
         
-        if log_content.strip():  # Seulement si il y a des logs
-            # Création du dossier logs s'il n'existe pas
+        if log_content.strip():
             logs_dir = "logs"
             if not os.path.exists(logs_dir):
                 os.makedirs(logs_dir)
             
             filepath = os.path.join(logs_dir, filename)
             
-            # Écriture des logs dans le fichier
             with open(filepath, 'w', encoding='utf-8') as f:
-                f.write(f"=== GLADIA TRANSCRIPTION LOGS ===\n")
-                f.write(f"Session terminée le: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                f.write(f"{'='*50}\n\n")
+                f.write(create_styled_header())
+                f.write("\n")
                 f.write(log_content)
             
-            print(f"\n📁 Logs sauvegardés dans: {filepath}")
+            print(f"\nLogs saved to: {filepath}")
         else:
-            print("\n📁 Aucun log à sauvegarder.")
+            print(f"\nNo logs to save.")
             
     except Exception as e:
-        print(f"\n❌ Erreur lors de la sauvegarde des logs: {e}")
+        print(f"\nError saving logs: {e}")
 
-
-logger = setup_logging_with_capture(False)
-
+logger = setup_logging_with_capture()
 
 
 class InvalidGladiaKeyException(Exception):
@@ -614,6 +694,7 @@ class AudioPlayback:
         except Exception as e:
             logger.warning(f"Error terminating PyAudio playback: {e}")
 
+
 class TTSService:
     def __init__(self, playback_audio: AudioPlayback, voice: str = "fr-FR-DenisNeural"):
         self.playback_audio = playback_audio
@@ -691,7 +772,6 @@ class TTSService:
                     self.playback_buffer.add_audio_chunk(chunk)
         except Exception as e:
             logger.error(f"Error queueing audio chunks: {e}")
-
 
 class TranscriptionAndVoiceService:
     def __init__(self, gladia_key: str, audio_capture: AudioCapture, tts_service: TTSService, 
@@ -1048,21 +1128,21 @@ class GladiaAudioManager:
     def __init__(self, 
                  gladia_key: str,
 
-                 agent_device: AudioDevice,
-                 phone_device: AudioDevice,
-                 agent_language: str = "fr",
-                 phone_language: str = "en",
+                 input_device: AudioDevice,
+                 output_device: AudioDevice,
+                 input_language: str = "fr",
+                 output_language: str = "en",
                  
                  silence_timeout: float = 30.0, 
                  prebuffer_seconds: float = 5.5):
 
         self.audio_buffer = SharedAudioBuffer(prebuffer_seconds=prebuffer_seconds)
-        self.audio_capture = AudioCapture(self.audio_buffer, agent_device)
-                
+        self.audio_capture = AudioCapture(self.audio_buffer, input_device)
+
         self.playback_buffer = SharedAudioPlaybackBuffer()
-        self.audio_playback = AudioPlayback(self.playback_buffer, phone_device)
+        self.audio_playback = AudioPlayback(self.playback_buffer, output_device)
         
-        voice = self.voice_edge_tts.get(phone_language, "en-US-AriaNeural")
+        voice = self.voice_edge_tts.get(output_language, "en-US-AriaNeural")
         
         self.tts_service = TTSService(self.audio_playback, voice=voice)
         logger.debug(f"TTS enabled with voice: {voice}")
@@ -1071,8 +1151,8 @@ class GladiaAudioManager:
             gladia_key=gladia_key, 
             audio_capture=self.audio_capture,
             tts_service=self.tts_service,
-            agent_language=agent_language, 
-            target_language=phone_language,
+            agent_language=input_language, 
+            target_language=output_language,
         )
         
         self.vad_controller = VADTranscriptionController(
@@ -1128,9 +1208,9 @@ class GladiaAudioManager:
         if self.audio_playback:
             self.audio_playback.cleanup()
 
-def get_all_audio_devices(filter: list[str] = ["default", "dmix", "to_headset", "from_pc", "dmix_combined", "spdif", "iec958",
+def get_all_audio_devices(filter: list[str] = ["dmix", "to_headset", "from_pc", "dmix_combined", "spdif", "iec958",
                                            "both_outputs", "vdownmix", "upmix", "speex", "speexrate", "samplerate", "lavrate",
-                                           "surround40", "front", "pulse", "sysdefault", "a52"]):
+                                           "surround40", "front", "sysdefault", "a52"]):
     """
     Scans and returns available audio input and output devices.
 
@@ -1280,6 +1360,10 @@ async def main(allowed_languages: List[str] = ["fr", "en", "es", "de"],
     parser.add_argument("--debug", action="store_true", help="Active or not the debug logs.", default=False)
 
     args = parser.parse_args()
+    if args.debug:
+        logger.setLevel(logging.DEBUG)
+    else:
+        logger.setLevel(logging.INFO)
 
     if args.list_devices:
         list_audio_devices()
@@ -1288,19 +1372,19 @@ async def main(allowed_languages: List[str] = ["fr", "en", "es", "de"],
         if not args.agent_device or not args.phone_device:
             logger.error(f"--agent-device ({args.agent_device}) and --phone-device ({args.phone_device}) cannot be empty.")
             return
-
+    
     gladia_key = args.gladia_key or os.getenv("GLADIA_API_KEY")
     gladia_key = is_gladia_key_valid(gladia_key)
         
     print(f"===== Gladia Live Transcription + Auto VAD + Pre-buffer ({prebuffer_seconds}s) =====")
     
-    manager = GladiaAudioManager(
+    agent_to_phone = GladiaAudioManager(
         gladia_key, 
 
-        agent_device=args.agent_device,
-        phone_device=args.phone_device,
-        agent_language=args.agent_language, 
-        phone_language=args.phone_language,
+        input_device=args.agent_device,
+        output_device=args.phone_device,
+        input_language=args.agent_language, 
+        output_language=args.phone_language,
         
         silence_timeout=silence_timeout, 
         prebuffer_seconds=prebuffer_seconds,
@@ -1317,7 +1401,7 @@ async def main(allowed_languages: List[str] = ["fr", "en", "es", "de"],
     except KeyboardInterrupt:
         logger.info("Program interrupted by user.")
     finally:
-        manager.cleanup()
+        agent_to_phone.cleanup()
         logger.info("Goodbye!")
 
 

@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Settings</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Inter', sans-serif;
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+            height: 100vh;
+            color: #2c3e50;
+            overflow: hidden;
+            padding: 15px;
+        }
+        
+        .container {
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            max-width: 400px;
+            margin: 0 auto;
+        }
+        
+        h2 {
+            font-size: 1.3rem;
+            font-weight: 600;
+            margin-bottom: 25px;
+            color: #2c3e50;
+            text-align: center;
+        }
+        
+        .form-group {
+            display: flex;
+            align-items: center;
+            margin-bottom: 20px;
+            gap: 15px;
+        }
+        
+        .form-group label {
+            font-weight: 500;
+            color: #34495e;
+            min-width: 80px;
+            font-size: 0.9rem;
+        }
+        
+        .form-group select {
+            flex: 1;
+            padding: 12px 35px 12px 12px;
+            border: 2px solid #e0e6ed;
+            font-size: 0.9rem;
+            font-family: 'Inter', sans-serif;
+            color: #2c3e50;
+            background: white;
+            transition: all 0.3s ease;
+            appearance: none;
+            background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e");
+            background-position: right 12px center;
+            background-repeat: no-repeat;
+            background-size: 16px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        
+        .form-group select:focus {
+            outline: none;
+            border-color: #3498db;
+            box-shadow: 0 0 0 3px rgba(52, 152, 219, 0.1);
+        }
+        
+        .form-group select:hover {
+            border-color: #bdc3c7;
+        }
+        
+        .form-group select.error {
+            border-color: #e74c3c;
+            box-shadow: 0 0 0 3px rgba(231, 76, 60, 0.1);
+        }
+        
+        .error-message {
+            color: #e74c3c;
+            font-size: 0.8rem;
+            margin-left: 95px;
+            margin-top: -15px;
+            margin-bottom: 20px;
+        }
+        
+        .button-container {
+            display: flex;
+            gap: 15px;
+            margin-top: 30px;
+            justify-content: center;
+        }
+        
+        .btn {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            padding: 12px 25px;
+            border: 2px solid;
+            font-family: 'Inter', sans-serif;
+            font-weight: 500;
+            font-size: 0.9rem;
+            text-decoration: none;
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+            cursor: pointer;
+            min-width: 120px;
+        }
+        
+        .btn::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 0;
+            height: 100%;
+            transition: width 0.3s ease;
+            z-index: 1;
+        }
+        
+        .btn span,
+        .btn svg {
+            position: relative;
+            z-index: 2;
+            transition: color 0.3s ease;
+        }
+        
+        .btn:hover::before {
+            width: 100%;
+        }
+        
+        .btn-primary {
+            background: #3498db;
+            border-color: #3498db;
+            color: white;
+        }
+        
+        .btn-primary::before {
+            background: #2980b9;
+        }
+        
+        .btn-primary:hover {
+            border-color: #2980b9;
+        }
+        
+        .btn-secondary {
+            background: white;
+            border-color: #95a5a6;
+            color: #2c3e50;
+        }
+        
+        .btn-secondary::before {
+            background: #95a5a6;
+        }
+        
+        .btn-secondary:hover {
+            border-color: #7f8c8d;
+        }
+        
+        .btn-secondary:hover span,
+        .btn-secondary:hover svg {
+            color: white;
+            fill: white;
+        }
+        
+        .icon {
+            width: 16px;
+            height: 16px;
+            fill: currentColor;
+        }
+        
+        /* Responsive pour 480x320 */
+        @media (max-width: 480px) {
+            body {
+                padding: 5px;
+            }
+            
+            .container {
+                justify-content: flex-start;
+                padding-top: 20px;
+            }
+            
+            h2 {
+                font-size: 1.1rem;
+                margin-bottom: 20px;
+            }
+            
+            .form-group {
+                flex-direction: column;
+                align-items: stretch;
+                gap: 8px;
+                margin-bottom: 15px;
+            }
+            
+            .form-group label {
+                min-width: auto;
+                font-size: 0.85rem;
+            }
+            
+            .form-group select {
+                padding: 10px 30px 10px 10px;
+                font-size: 0.85rem;
+            }
+            
+            .error-message {
+                margin-left: 0;
+                margin-top: 5px;
+                margin-bottom: 15px;
+            }
+            
+            .button-container {
+                flex-direction: column;
+                gap: 10px;
+                margin-top: 20px;
+            }
+            
+            .btn {
+                padding: 10px 20px;
+                font-size: 0.85rem;
+                min-width: auto;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>Settings</h2>
+        
+        <form method="post" id="settingsForm">
+            <div class="form-group">
+                <label for="language">Language:</label>
+                <select name="language" id="language" required>
+                    {% for lang in languages %}
+                    <option value="{{ lang }}" {% if state.language == lang %}selected{% endif %}>{{ lang }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            
+            <div class="form-group">
+                <label for="agent_device">Agent:</label>
+                <select name="agent_device" id="agent_device" required>
+                    {% for dev in devices %}
+                    <option value="{{ dev }}" {% if state.agent_device == dev %}selected{% endif %}>{{ dev }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div id="agent_error" class="error-message" style="display: none;"></div>
+            
+            <div class="form-group">
+                <label for="output_device">Output:</label>
+                <select name="output_device" id="output_device" required>
+                    {% for dev in devices %}
+                    <option value="{{ dev }}" {% if state.output_device == dev %}selected{% endif %}>{{ dev }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div id="output_error" class="error-message" style="display: none;"></div>
+            
+            <div class="button-container">
+                <a onclick="window.location.href='/'; return false;" class="btn btn-secondary">
+                    <svg class="icon" viewBox="0 0 24 24">
+                        <path d="M20,11V13H8L13.5,18.5L12.08,19.92L4.16,12L12.08,4.08L13.5,5.5L8,11H20Z"/>
+                    </svg>
+                    <span>Back</span>
+                </a>
+                
+                <button type="submit" class="btn btn-primary">
+                    <svg class="icon" viewBox="0 0 24 24">
+                        <path d="M15,9H5V5H15M12,19A3,3 0 0,1 9,16A3,3 0 0,1 12,13A3,3 0 0,1 15,16A3,3 0 0,1 12,19M17,3H5C3.89,3 3,3.9 3,5V19A2,2 0 0,0 5,21H19A2,2 0 0,0 21,19V7L17,3Z"/>
+                    </svg>
+                    <span>Save</span>
+                </button>
+            </div>
+        </form>
+    </div>
+    
+    <script>
+        document.getElementById('settingsForm').addEventListener('submit', function(e) {
+            const agentDevice = document.getElementById('agent_device').value;
+            const outputDevice = document.getElementById('output_device').value;
+            const agentSelect = document.getElementById('agent_device');
+            const outputSelect = document.getElementById('output_device');
+            const agentError = document.getElementById('agent_error');
+            const outputError = document.getElementById('output_error');
+            
+            // Reset errors
+            agentSelect.classList.remove('error');
+            outputSelect.classList.remove('error');
+            agentError.style.display = 'none';
+            outputError.style.display = 'none';
+            
+            // Check if same device selected
+            if (agentDevice === outputDevice) {
+                e.preventDefault();
+                
+                agentSelect.classList.add('error');
+                outputSelect.classList.add('error');
+                agentError.textContent = 'Agent and Output devices must be different';
+                outputError.textContent = 'Agent and Output devices must be different';
+                agentError.style.display = 'block';
+                outputError.style.display = 'block';
+            }
+        });
+        
+        // Clear errors on change
+        document.getElementById('agent_device').addEventListener('change', function() {
+            document.getElementById('agent_device').classList.remove('error');
+            document.getElementById('agent_error').style.display = 'none';
+            document.getElementById('output_device').classList.remove('error');
+            document.getElementById('output_error').style.display = 'none';
+        });
+        
+        document.getElementById('output_device').addEventListener('change', function() {
+            document.getElementById('agent_device').classList.remove('error');
+            document.getElementById('agent_error').style.display = 'none';
+            document.getElementById('output_device').classList.remove('error');
+            document.getElementById('output_error').style.display = 'none';
+        });
+    </script>
+</body>
+</html>
