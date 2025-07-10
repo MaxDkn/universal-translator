@@ -16,4 +16,5 @@ dependencies = [
     "jinja2",
     "itsdangerous",
     "python-multipart",
+    "toml>=0.10.2",
 ]

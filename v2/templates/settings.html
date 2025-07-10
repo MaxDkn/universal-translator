@@ -241,7 +241,7 @@
                 <label for="language">Language:</label>
                 <select name="language" id="language" required>
                     {% for lang in languages %}
-                    <option value="{{ lang }}" {% if state.language == lang %}selected{% endif %}>{{ lang }}</option>
+                    <option value="{{ lang }}" {% if current_language == lang %}selected{% endif %}>{{ lang }}</option>
                     {% endfor %}
                 </select>
             </div>
@@ -250,7 +250,7 @@
                 <label for="agent_device">Agent:</label>
                 <select name="agent_device" id="agent_device" required>
                     {% for dev in devices %}
-                    <option value="{{ dev }}" {% if state.agent_device == dev %}selected{% endif %}>{{ dev }}</option>
+                    <option value="{{ dev }}" {% if agent_device == dev %}selected{% endif %}>{{ dev }}</option>
                     {% endfor %}
                 </select>
             </div>
@@ -260,7 +260,7 @@
                 <label for="output_device">Output:</label>
                 <select name="output_device" id="output_device" required>
                     {% for dev in devices %}
-                    <option value="{{ dev }}" {% if state.output_device == dev %}selected{% endif %}>{{ dev }}</option>
+                    <option value="{{ dev }}" {% if phone_device == dev %}selected{% endif %}>{{ dev }}</option>
                     {% endfor %}
                 </select>
             </div>
@@ -326,6 +326,10 @@
             document.getElementById('output_device').classList.remove('error');
             document.getElementById('output_error').style.display = 'none';
         });
+
+        window.addEventListener("beforeunload", function() {
+         navigator.sendBeacon("/toggle");
+        }); 
     </script>
 </body>
 </html>

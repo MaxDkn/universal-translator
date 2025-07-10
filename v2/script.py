@@ -20,8 +20,11 @@ import pyaudio
 import requests
 import edge_tts
 import numpy as np
+from fastapi import FastAPI
 from pydub import AudioSegment
+from fastapi.templating import Jinja2Templates
 from websockets.exceptions import ConnectionClosedOK
+from starlette.middleware.sessions import SessionMiddleware
 from websockets.asyncio.client import ClientConnection, connect
 from silero_vad import get_speech_timestamps, load_silero_vad
 warnings.filterwarnings("ignore", message="Sampling rate is a multiply of 16000")
@@ -70,15 +73,22 @@ class AlignedFormatter(logging.Formatter):
         Returns:
             str: Formatted log message string
         """
-        level_name = f"{record.levelname:<8}"
-        timestamp = self.formatTime(record, "%Y-%m-%d %H:%M:%S")
-        
+        level_text = f'{record.levelname}:'
+        padded_level = level_text.ljust(9)
+
         if self.colored:
             color = self.COLORS.get(record.levelname, '')
-            level_colored = f"{color}{level_name}{self.RESET}"
-            return f"{level_colored} {timestamp} - {record.getMessage()}"
+            # Remplacer uniquement le nom du niveau, sans colorer le ":"
+            level_name = padded_level.replace(
+                level_text,
+                f'{color}{record.levelname}{self.RESET}:'
+            )
         else:
-            return f"{level_name} {timestamp} - {record.getMessage()}"
+            level_name = padded_level
+
+        timestamp = self.formatTime(record, "%Y-%m-%d %H:%M:%S")
+        
+        return f"{level_name} {timestamp} - {record.getMessage()}"
 
 def create_styled_header():
     """
@@ -1357,7 +1367,7 @@ async def launch(gladia_key: str, agent_device: AudioDevice, phone_device: Audio
         silence_timeout=silence_timeout, 
         prebuffer_seconds=prebuffer_seconds,
     ).start_audio_capture().start_vad_monitoring()
-    
+    logger.setLevel(logging.DEBUG)
     logger.info(f"TTS enabled - Output device: {phone_device.name} | Input device: {agent_device.name}")
     logger.info('Starting transcription...\n')
 
@@ -1371,6 +1381,7 @@ async def launch(gladia_key: str, agent_device: AudioDevice, phone_device: Audio
     finally:
         agent_to_phone.cleanup()
         logger.info("Goodbye!")
+
 
 async def main(allowed_languages: List[str] = ["fr", "en", "es", "de"], 
                silence_timeout: float = 15.0, 
@@ -1389,10 +1400,7 @@ async def main(allowed_languages: List[str] = ["fr", "en", "es", "de"],
     parser.add_argument("--debug", action="store_true", help="Active or not the debug logs.", default=False)
 
     args = parser.parse_args()
-    if args.debug:
-        logger.setLevel(logging.DEBUG)
-    else:
-        logger.setLevel(logging.INFO)
+    logger.setLevel(logging.DEBUG)
 
     if args.list_devices:
         list_audio_devices()

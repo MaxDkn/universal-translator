@@ -1,0 +1,10 @@
+silence_timeout = 30
+prebuffer_seconds = 5.5
+
+[devices]
+agent = "CM477-30757"
+phone = "KT USB Audio"
+
+[languages]
+agent = "en"
+phone = "fr"

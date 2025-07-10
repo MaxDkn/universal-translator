@@ -359,6 +359,26 @@
             display: none;
         }
         
+        .websocket-status {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.7rem;
+            color: #bdc3c7;
+        }
+        
+        .websocket-status.connected {
+            color: #27ae60;
+        }
+        
+        .websocket-status.disconnected {
+            color: #e74c3c;
+        }
+        
+        .websocket-status.reconnecting {
+            color: #f39c12;
+        }
+        
         /* Responsive */
         @media (max-width: 480px) {
             .container {
@@ -463,6 +483,9 @@ Translation will appear here...
                         <div class="logs-stats">
                             <span>Lines: <span id="logsLineCount">0</span></span>
                             <span>Updated: <span id="logsLastUpdate">Never</span></span>
+                            <span class="websocket-status" id="websocketStatus">
+                                <span>🔴 Disconnected</span>
+                            </span>
                         </div>
                     </div>
                 </div>
@@ -475,6 +498,7 @@ Translation will appear here...
         const logsContent = document.getElementById("logsContent");
         const logsLineCount = document.getElementById("logsLineCount");
         const logsLastUpdate = document.getElementById("logsLastUpdate");
+        const websocketStatus = document.getElementById("websocketStatus");
         const transcriptionView = document.getElementById("transcriptionView");
         const sourceText = document.getElementById("sourceText");
         const translationText = document.getElementById("translationText");
@@ -483,11 +507,73 @@ Translation will appear here...
         const stopButton = document.getElementById("stopButton");
         const stopForm = document.getElementById("stopForm");
         const countdown = document.getElementById("countdown");
+        
         let refreshInterval;
         let logsRefreshInterval;
         let isStoppingProcess = false;
         let currentView = 'transcription';
         let logLines = [];
+        let ws;
+        let reconnectAttempts = 0;
+        const maxReconnectAttempts = 5;
+        
+        // WebSocket connection management
+        function updateWebSocketStatus(status, message) {
+            const statusElement = document.getElementById('websocketStatus');
+            if (statusElement) {
+                statusElement.className = `websocket-status ${status}`;
+                statusElement.innerHTML = `<span>${message}</span>`;
+            }
+        }
+        
+        function connectWebSocket() {
+            try {
+                ws = new WebSocket('ws://127.0.0.1:8000/ws');
+                
+                ws.onopen = function(event) {
+                    console.log('WebSocket connected');
+                    updateWebSocketStatus('connected', '🟢 Connected');
+                    reconnectAttempts = 0;
+                };
+                
+                ws.onmessage = function(event) {
+                    if (currentView === 'logs') {
+                        displayLogs(event.data);
+                    }
+                };
+                
+                ws.onclose = function(event) {
+                    console.log('WebSocket disconnected');
+                    updateWebSocketStatus('disconnected', '🔴 Disconnected');
+                    
+                    // Tentative de reconnexion
+                    if (reconnectAttempts < maxReconnectAttempts) {
+                        reconnectAttempts++;
+                        updateWebSocketStatus('reconnecting', `🟡 Reconnecting (${reconnectAttempts}/${maxReconnectAttempts})`);
+                        console.log(`Attempting to reconnect (${reconnectAttempts}/${maxReconnectAttempts})`);
+                        setTimeout(connectWebSocket, 2000);
+                    } else {
+                        console.log('Max reconnection attempts reached, falling back to polling');
+                        updateWebSocketStatus('disconnected', '🔴 Polling fallback');
+                        if (currentView === 'logs') {
+                            startLogsPolling();
+                        }
+                    }
+                };
+                
+                ws.onerror = function(error) {
+                    console.error('WebSocket error:', error);
+                    updateWebSocketStatus('disconnected', '🔴 Error');
+                };
+                
+            } catch (error) {
+                console.log('WebSocket connection failed, falling back to polling');
+                updateWebSocketStatus('disconnected', '🔴 Polling fallback');
+                if (currentView === 'logs') {
+                    startLogsPolling();
+                }
+            }
+        }
         
         // Function to format log line with color coding
         function formatLogLine(line) {
@@ -527,36 +613,48 @@ Translation will appear here...
             return div;
         }
         
-        // Function to refresh logs for the logs view
-        async function refreshLogsView() {
-            try {
-                const response = await fetch('/get_logs?lines=9');
-                const logs = await response.text();
+        // Function to display logs
+        function displayLogs(logs) {
+            if (logs.trim()) {
+                logsContent.innerHTML = '';
+                logLines = logs.split('\n').filter(line => line.trim());
                 
-                if (logs.trim()) {
-                    logsContent.innerHTML = '';
-                    logLines = logs.split('\n').filter(line => line.trim());
-                    
-                    logLines.forEach(line => {
-                        const logElement = formatLogLine(line);
-                        logsContent.appendChild(logElement);
-                    });
-                    
-                    // Update stats
-                    logsLineCount.textContent = logLines.length;
-                    logsLastUpdate.textContent = new Date().toLocaleTimeString();
-                    
-                    // Auto-scroll to bottom
-                    logsContent.scrollTop = logsContent.scrollHeight;
-                } else {
-                    logsContent.innerHTML = '<div class="logs-empty"><svg viewBox="0 0 24 24"><path d="M13,9H18.5L13,3.5V9M6,2H14L20,8V20A2,2 0 0,1 18,22H6C4.89,22 4,21.1 4,20V4C4,2.89 4.89,2 6,2M15,18V16H6V18H15M18,14V12H6V14H18Z"/></svg>No logs available</div>';
-                }
+                logLines.forEach(line => {
+                    const logElement = formatLogLine(line);
+                    logsContent.appendChild(logElement);
+                });
+                
+                // Update stats
+                logsLineCount.textContent = logLines.length;
+                logsLastUpdate.textContent = new Date().toLocaleTimeString();
+                
+                // Auto-scroll to bottom
+                logsContent.scrollTop = logsContent.scrollHeight;
+            } else {
+                logsContent.innerHTML = '<div class="logs-empty"><svg viewBox="0 0 24 24"><path d="M13,9H18.5L13,3.5V9M6,2H14L20,8V20A2,2 0 0,1 18,22H6C4.89,22 4,21.1 4,20V4C4,2.89 4.89,2 6,2M15,18V16H6V18H15M18,14V12H6V14H18Z"/></svg>No logs available</div>';
+            }
+        }
+        
+        // Function to start polling fallback
+        function startLogsPolling() {
+            if (logsRefreshInterval) {
+                clearInterval(logsRefreshInterval);
+            }
+            logsRefreshInterval = setInterval(refreshLogsHTTP, 2000);
+        }
+        
+        // Function to refresh logs via HTTP
+        async function refreshLogsHTTP() {
+            try {
+                // Utilise /logs au lieu de /get_logs
+                const response = await fetch('/logs');
+                const logs = await response.text();
+                displayLogs(logs);
             } catch (error) {
                 logsContent.innerHTML = '<div class="logs-empty"><svg viewBox="0 0 24 24"><path d="M13,9H18.5L13,3.5V9M6,2H14L20,8V20A2,2 0 0,1 18,22H6C4.89,22 4,21.1 4,20V4C4,2.89 4.89,2 6,2M15,18V16H6V18H15M18,14V12H6V14H18Z"/></svg>Error loading logs</div>';
                 console.error('Error loading logs:', error);
             }
         }
-        
         // Function to switch views
         function switchView(view) {
             if (view === 'logs') {
@@ -566,9 +664,24 @@ Translation will appear here...
                 transcriptionButton.classList.remove('active');
                 currentView = 'logs';
                 
-                // Start logs auto-refresh
-                refreshLogsView();
-                logsRefreshInterval = setInterval(refreshLogsView, 2000);
+                // Clear any existing intervals
+                if (logsRefreshInterval) {
+                    clearInterval(logsRefreshInterval);
+                }
+                
+                // Try WebSocket first, fallback to polling if needed
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    // WebSocket is connected, logs will come via WebSocket
+                    console.log('Using WebSocket for logs');
+                } else {
+                    // Start HTTP polling
+                    console.log('Using HTTP polling for logs');
+                    startLogsPolling();
+                }
+                
+                // Load initial logs
+                refreshLogsHTTP();
+                
             } else {
                 transcriptionView.classList.remove('hidden');
                 logsView.classList.add('hidden');
@@ -576,7 +689,7 @@ Translation will appear here...
                 logsButton.classList.remove('active');
                 currentView = 'transcription';
                 
-                // Stop logs auto-refresh when switching away
+                // Stop logs polling when switching away
                 if (logsRefreshInterval) {
                     clearInterval(logsRefreshInterval);
                     logsRefreshInterval = null;
@@ -587,17 +700,6 @@ Translation will appear here...
         // Button event listeners
         logsButton.addEventListener('click', () => switchView('logs'));
         transcriptionButton.addEventListener('click', () => switchView('transcription'));
-        
-        // Function to refresh logs (simple version for transcription view)
-        async function refreshLogs() {
-            try {
-                const response = await fetch('/get_logs');
-                const logs = await response.text();
-                // This is only used if we had the old simple logs view
-            } catch (error) {
-                console.error('Error:', error);
-            }
-        }
         
         // Function to simulate transcription updates
         function updateTranscription() {
@@ -686,11 +788,13 @@ Translation will appear here...
         
         // Start auto-refresh for transcription
         refreshInterval = setInterval(() => {
-            updateTranscription();
+            if (currentView === 'transcription') {
+                updateTranscription();
+            }
         }, 3000);
         
-        // Initial load
-        // refreshLogs(); // Not needed anymore
+        // Initialize WebSocket connection
+        connectWebSocket();
         
         // Cleanup on page unload
         window.addEventListener('beforeunload', () => {
@@ -700,6 +804,9 @@ Translation will appear here...
             if (logsRefreshInterval) {
                 clearInterval(logsRefreshInterval);
             }
+            if (ws) {
+                ws.close();
+            }
         });
         
         // Keyboard shortcuts
@@ -707,7 +814,7 @@ Translation will appear here...
             if (e.key === 'r' || e.key === 'R') {
                 e.preventDefault();
                 if (currentView === 'logs') {
-                    refreshLogsView();
+                    refreshLogsHTTP();
                 }
             }
             if (e.key === 'l' || e.key === 'L') {
