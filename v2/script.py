@@ -13,7 +13,6 @@ import threading
 from enum import Enum
 from collections import deque
 from datetime import datetime, timedelta
-from logging.handlers import MemoryHandler
 from typing import Literal, TypedDict, List
 
 import torch
@@ -202,7 +201,7 @@ def save_logs_to_file():
             
             print(f"\nLogs saved to: {filepath}")
         else:
-            print(f"\nNo logs to save.")
+            print("\nNo logs to save.")
             
     except Exception as e:
         print(f"\nError saving logs: {e}")
@@ -476,7 +475,7 @@ class AudioCapture:
                 info = self.p.get_device_info_by_index(i)
                 if info['maxInputChannels'] > 0:
                     return i
-            except:
+            except Exception as _:
                 continue
         raise Exception("No input device found")
     
@@ -501,7 +500,7 @@ class AudioCapture:
             logger.debug(f"Opening audio stream: {config}")
             self.stream = self.p.open(**config)
             device_name = self.device.name if self.device else "default"
-            logger.debug(f"Audio stream opened successfully")
+            logger.debug("Audio stream opened successfully")
             logger.debug(f"Device: {device_name}")
             logger.debug(f"Sample rate: {self.SAMPLE_RATE} Hz")
             logger.debug(f"Channels: {self.CHANNELS}")
@@ -1343,6 +1342,36 @@ def list_audio_devices():
 
 atexit.register(save_logs_to_file)
 
+async def launch(gladia_key: str, agent_device: AudioDevice, phone_device: AudioDevice, 
+                 agent_language: str, phone_language: str, 
+                 silence_timeout: int = 30, prebuffer_seconds: int = 5.5):
+
+    agent_to_phone = GladiaAudioManager(
+        gladia_key, 
+
+        input_device=agent_device,
+        output_device=phone_device,
+        input_language=agent_language, 
+        output_language=phone_language,
+        
+        silence_timeout=silence_timeout, 
+        prebuffer_seconds=prebuffer_seconds,
+    ).start_audio_capture().start_vad_monitoring()
+    
+    logger.info(f"TTS enabled - Output device: {phone_device.name} | Input device: {agent_device.name}")
+    logger.info('Starting transcription...\n')
+
+    try:
+        while True:
+            if input().lower() in ['q', '']:
+                break
+            await asyncio.sleep(0.1)
+    except KeyboardInterrupt:
+        logger.info("Program interrupted by user.")
+    finally:
+        agent_to_phone.cleanup()
+        logger.info("Goodbye!")
+
 async def main(allowed_languages: List[str] = ["fr", "en", "es", "de"], 
                silence_timeout: float = 15.0, 
                prebuffer_seconds: float = 5.5):
@@ -1376,33 +1405,8 @@ async def main(allowed_languages: List[str] = ["fr", "en", "es", "de"],
     gladia_key = args.gladia_key or os.getenv("GLADIA_API_KEY")
     gladia_key = is_gladia_key_valid(gladia_key)
         
-    print(f"===== Gladia Live Transcription + Auto VAD + Pre-buffer ({prebuffer_seconds}s) =====")
-    
-    agent_to_phone = GladiaAudioManager(
-        gladia_key, 
-
-        input_device=args.agent_device,
-        output_device=args.phone_device,
-        input_language=args.agent_language, 
-        output_language=args.phone_language,
-        
-        silence_timeout=silence_timeout, 
-        prebuffer_seconds=prebuffer_seconds,
-    ).start_audio_capture().start_vad_monitoring()
-    
-    logger.info(f"TTS enabled - Output device: {args.phone_device.name} | Input device: {args.agent_device.name}")
-    logger.info('Starting transcription...\n')
-
-    try:
-        while True:
-            if input().lower() in ['q', '']:
-                break
-            await asyncio.sleep(0.1)
-    except KeyboardInterrupt:
-        logger.info("Program interrupted by user.")
-    finally:
-        agent_to_phone.cleanup()
-        logger.info("Goodbye!")
+    logger.info(f"===== Gladia Live Transcription + Auto VAD + Pre-buffer ({prebuffer_seconds}s) =====")
+    await launch(gladia_key, agent_device=args.agent_device, phone_device=args.phone_device, agent_language=args.agent_language, phone_language=args.phone_language, silence_timeout=silence_timeout, prebuffer_seconds=prebuffer_seconds)
 
 
 if __name__ == "__main__":

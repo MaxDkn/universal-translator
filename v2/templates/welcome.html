@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Universal Transcriptor</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Inter', sans-serif;
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            color: #2c3e50;
+            overflow: hidden;
+        }
+        
+        .container {
+            text-align: center;
+            max-width: 450px;
+            width: 90%;
+            padding: 20px;
+        }
+        
+        h1 {
+            font-size: 2.2rem;
+            font-weight: 700;
+            margin-bottom: 30px;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            letter-spacing: 1px;
+            color: #34495e;
+        }
+        
+        .welcome-text {
+            font-size: 1.5rem;
+            font-weight: 400;
+            margin-bottom: 40px;
+            height: 60px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #7f8c8d;
+        }
+        
+        .typewriter {
+            border-right: 2px solid #3498db;
+            padding-right: 5px;
+            animation: blink 1s infinite;
+        }
+        
+        @keyframes blink {
+            0%, 50% { border-color: #3498db; }
+            51%, 100% { border-color: transparent; }
+        }
+        
+        .buttons-container {
+            display: flex;
+            flex-direction: row;
+            gap: 30px;
+            align-items: center;
+            justify-content: center;
+            width: 100%;
+        }
+        
+        .btn {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            padding: 15px 25px;
+            background: white;
+            border: 2px solid #e0e6ed;
+            border-radius: 0;
+            color: #2c3e50;
+            text-decoration: none;
+            font-family: 'Inter', sans-serif;
+            font-weight: 500;
+            font-size: 1rem;
+            transition: all 0.3s ease;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            width: 140px;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .btn::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 0;
+            height: 100%;
+            background: #3498db;
+            transition: width 0.3s ease;
+            z-index: 1;
+        }
+        
+        .btn-secondary::before {
+            background: #95a5a6;
+        }
+        
+        .btn span,
+        .btn svg {
+            position: relative;
+            z-index: 2;
+            transition: color 0.3s ease;
+        }
+        
+        .btn:hover::before {
+            width: 100%;
+        }
+        
+        .btn:hover {
+            border-color: #3498db;
+            box-shadow: 0 4px 15px rgba(52,152,219,0.3);
+        }
+        
+        .btn:hover span,
+        .btn:hover svg {
+            color: white;
+            fill: white;
+        }
+        
+        .btn-primary {
+            background: #3498db;
+            border-color: #3498db;
+            color: white;
+        }
+        
+        .btn-primary::before {
+            background: #2980b9;
+        }
+        
+        .btn-primary:hover {
+            border-color: #2980b9;
+            box-shadow: 0 4px 15px rgba(52,152,219,0.4);
+        }
+        
+        .btn-secondary {
+            background: white;
+            border-color: #bdc3c7;
+            color: #2c3e50;
+        }
+        
+        .btn-secondary:hover {
+            border-color: #95a5a6;
+            box-shadow: 0 4px 15px rgba(149,165,166,0.3);
+        }
+        
+        .icon {
+            width: 24px;
+            height: 24px;
+            fill: currentColor;
+        }
+        
+        .launch-icon {
+            width: 28px;
+            height: 28px;
+        }
+        
+        /* Animations de particules */
+        .particle {
+            position: absolute;
+            width: 3px;
+            height: 3px;
+            background: rgba(52, 152, 219, 0.4);
+            border-radius: 50%;
+            animation: float 8s infinite ease-in-out;
+        }
+        
+        @keyframes float {
+            0%, 100% { transform: translateY(0px) rotate(0deg); opacity: 0.8; }
+            50% { transform: translateY(-15px) rotate(180deg); opacity: 0.3; }
+        }
+        
+        /* Responsive pour petit écran */
+        @media (max-width: 480px) {
+            h1 {
+                font-size: 1.8rem;
+                margin-bottom: 20px;
+            }
+            
+            .welcome-text {
+                font-size: 1.2rem;
+                height: 50px;
+                margin-bottom: 30px;
+            }
+            
+            .buttons-container {
+                gap: 20px;
+            }
+            
+            .btn {
+                width: 120px;
+                padding: 12px 20px;
+                font-size: 0.9rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>GLADIA UNIVERSAL TRANSLATOR</h1>
+        
+        <div class="welcome-text">
+            <span id="typewriter-text" class="typewriter"></span>
+        </div>
+        
+        <div class="buttons-container">
+            <a onclick="window.location.href='/settings'; return false;" class="btn btn-secondary">
+                <svg class="icon" viewBox="0 0 24 24">
+                    <path d="M12,15.5A3.5,3.5 0 0,1 8.5,12A3.5,3.5 0 0,1 12,8.5A3.5,3.5 0 0,1 15.5,12A3.5,3.5 0 0,1 12,15.5M19.43,12.97C19.47,12.65 19.5,12.33 19.5,12C19.5,11.67 19.47,11.34 19.43,11.03L21.54,9.37C21.73,9.22 21.78,8.95 21.66,8.73L19.66,5.27C19.54,5.05 19.27,4.96 19.05,5.05L16.56,6.05C16.04,5.66 15.5,5.32 14.87,5.07L14.5,2.42C14.46,2.18 14.25,2 14,2H10C9.75,2 9.54,2.18 9.5,2.42L9.13,5.07C8.5,5.32 7.96,5.66 7.44,6.05L4.95,5.05C4.73,4.96 4.46,5.05 4.34,5.27L2.34,8.73C2.22,8.95 2.27,9.22 2.46,9.37L4.57,11.03C4.53,11.34 4.5,11.67 4.5,12C4.5,12.33 4.53,12.65 4.57,12.97L2.46,14.63C2.27,14.78 2.22,15.05 2.34,15.27L4.34,18.73C4.46,18.95 4.73,19.03 4.95,18.95L7.44,17.94C7.96,18.34 8.5,18.68 9.13,18.93L9.5,21.58C9.54,21.82 9.75,22 10,22H14C14.25,22 14.46,21.82 14.5,21.58L14.87,18.93C15.5,18.68 16.04,18.34 16.56,17.94L19.05,18.95C19.27,19.03 19.54,18.95 19.66,18.73L21.66,15.27C21.78,15.05 21.73,14.78 21.54,14.63L19.43,12.97Z"/>
+                </svg>
+                <span>Paramètres</span>
+            </a>
+            
+            <a onclick="window.location.href='/launch'; return false;" class="btn btn-primary">
+                <svg class="launch-icon" viewBox="0 0 24 24">
+                    <path d="M8,5.14V19.14L19,12.14L8,5.14Z"/>
+                </svg>
+                <span>Lancer</span>
+            </a>
+        </div>
+    </div>
+    
+    <script>
+        // Textes de bienvenue dans différentes langues
+        const welcomeTexts = [
+            "Welcome",
+            "Bonjour", 
+            "Hola",
+            "Guten Tag",
+            "Ciao",
+            "Olá",
+            "Привет",
+            "こんにちは",
+            "مرحبا",
+            "Namaste",
+            "Hej",
+            "Hallo"
+        ];
+        
+        let currentIndex = 0;
+        const typewriterElement = document.getElementById('typewriter-text');
+        
+        function typeWriter(text, callback) {
+            let i = 0;
+            typewriterElement.textContent = '';
+            
+            function type() {
+                if (i < text.length) {
+                    typewriterElement.textContent += text.charAt(i);
+                    i++;
+                    setTimeout(type, 100);
+                } else {
+                    setTimeout(callback, 2000);
+                }
+            }
+            
+            type();
+        }
+        
+        function eraseText(callback) {
+            const currentText = typewriterElement.textContent;
+            let i = currentText.length;
+            
+            function erase() {
+                if (i > 0) {
+                    typewriterElement.textContent = currentText.substring(0, i - 1);
+                    i--;
+                    setTimeout(erase, 50);
+                } else {
+                    setTimeout(callback, 500);
+                }
+            }
+            
+            erase();
+        }
+        
+        function animateWelcome() {
+            const currentText = welcomeTexts[currentIndex];
+            
+            typeWriter(currentText, () => {
+                eraseText(() => {
+                    currentIndex = (currentIndex + 1) % welcomeTexts.length;
+                    animateWelcome();
+                });
+            });
+        }
+        
+        function createParticles() {
+            for (let i = 0; i < 15; i++) {
+                const particle = document.createElement('div');
+                particle.className = 'particle';
+                particle.style.left = Math.random() * 100 + '%';
+                particle.style.top = Math.random() * 100 + '%';
+                particle.style.animationDelay = Math.random() * 8 + 's';
+                particle.style.animationDuration = (Math.random() * 4 + 4) + 's';
+                document.body.appendChild(particle);
+            }
+        }
+        
+        window.addEventListener('load', () => {
+            createParticles();
+            setTimeout(animateWelcome, 500);
+        });
+    </script>
+</body>
+</html>

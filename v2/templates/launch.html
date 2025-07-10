@@ -1,0 +1,724 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Launch</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Inter', sans-serif;
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+            height: 100vh;
+            color: #2c3e50;
+            overflow: hidden;
+        }
+        
+        .container {
+            display: flex;
+            height: 100vh;
+            gap: 2px;
+        }
+        
+        .left-panel {
+            width: 120px;
+            background: white;
+            border-right: 2px solid #e0e6ed;
+            display: flex;
+            flex-direction: column;
+            padding: 20px;
+            gap: 20px;
+        }
+        
+        .right-panel {
+            flex: 1;
+            background: white;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        
+        .status-section {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 20px;
+        }
+        
+        .status-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #27ae60;
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+        
+        .status-text {
+            font-size: 0.9rem;
+            font-weight: 500;
+            color: #27ae60;
+        }
+        
+        .btn {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-direction: column;
+            gap: 8px;
+            padding: 15px 10px;
+            border: 2px solid;
+            font-family: 'Inter', sans-serif;
+            font-weight: 500;
+            font-size: 0.8rem;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+            width: 100%;
+            text-decoration: none;
+            color: inherit;
+        }
+        
+        .btn::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 0;
+            height: 100%;
+            transition: width 0.3s ease;
+            z-index: 1;
+        }
+        
+        .btn span,
+        .btn svg {
+            position: relative;
+            z-index: 2;
+        }
+        
+        .btn:hover::before {
+            width: 100%;
+        }
+        
+        .btn-stop {
+            background: #e74c3c;
+            border-color: #e74c3c;
+            color: white;
+        }
+        
+        .btn-stop::before {
+            background: #c0392b;
+        }
+        
+        .btn-stop:disabled {
+            opacity: 0.7;
+            cursor: not-allowed;
+        }
+        
+        .btn-logs {
+            background: #3498db;
+            border-color: #3498db;
+            color: white;
+        }
+        
+        .btn-logs::before {
+            background: #2980b9;
+        }
+        
+        .btn-logs.active {
+            background: #2980b9;
+            border-color: #2980b9;
+        }
+        
+        .btn-transcription {
+            background: #27ae60;
+            border-color: #27ae60;
+            color: white;
+        }
+        
+        .btn-transcription::before {
+            background: #229954;
+        }
+        
+        .btn-transcription.active {
+            background: #229954;
+            border-color: #229954;
+        }
+        
+        .icon {
+            width: 20px;
+            height: 20px;
+            fill: currentColor;
+        }
+        
+        .countdown {
+            font-size: 0.7rem;
+            margin-top: 5px;
+            opacity: 0.8;
+        }
+        
+        .content-area {
+            flex: 1;
+            padding: 20px;
+            overflow-y: auto;
+            background: white;
+        }
+        
+        .transcription-view {
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+        
+        .transcription-section {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .transcription-label {
+            font-size: 0.9rem;
+            font-weight: 600;
+            color: #34495e;
+            margin-bottom: 8px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .transcription-text {
+            flex: 1;
+            font-size: 1.1rem;
+            line-height: 1.6;
+            color: #2c3e50;
+            padding: 15px;
+            border: 1px solid #011124;
+            background: #f8f9fa;
+            border-radius: 4px;
+            overflow-y: auto;
+            resize: none;
+            font-family: 'Inter', sans-serif;
+        }
+        
+        .transcription-text:focus {
+            outline: none;
+            border-color: #3498db;
+            box-shadow: 0 0 0 3px rgba(52, 152, 219, 0.1);
+        }
+        
+        .transcription-text.source {
+            border-left: 4px solid #3498db;
+        }
+        
+        .transcription-text.translation {
+            border-left: 4px solid #27ae60;
+        }
+        
+        .transcription-text::-webkit-scrollbar {
+            width: 6px;
+        }
+        
+        .transcription-text::-webkit-scrollbar-track {
+            background: #f1f1f1;
+        }
+        
+        .transcription-text::-webkit-scrollbar-thumb {
+            background: #bdc3c7;
+            border-radius: 3px;
+        }
+        
+        .transcription-text::-webkit-scrollbar-thumb:hover {
+            background: #95a5a6;
+        }
+        
+        .transcription-icon {
+            width: 16px;
+            height: 16px;
+            fill: currentColor;
+        }
+        
+        .logs-view {
+            background: #2c3e50;
+            color: #ecf0f1;
+            font-family: 'Courier New', monospace;
+            font-size: 0.8rem;
+            height: 100%;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .logs-content {
+            flex: 1;
+            padding: 15px;
+            overflow-y: auto;
+            line-height: 1.4;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+        
+        .logs-content::-webkit-scrollbar {
+            width: 6px;
+        }
+        
+        .logs-content::-webkit-scrollbar-track {
+            background: #34495e;
+        }
+        
+        .logs-content::-webkit-scrollbar-thumb {
+            background: #7f8c8d;
+            border-radius: 3px;
+        }
+        
+        .logs-content::-webkit-scrollbar-thumb:hover {
+            background: #95a5a6;
+        }
+        
+        .log-line {
+            margin-bottom: 2px;
+            padding: 1px 0;
+        }
+        
+        .log-line.error {
+            color: #e74c3c;
+        }
+        
+        .log-line.warning {
+            color: #f39c12;
+        }
+        
+        .log-line.info {
+            color: #3498db;
+        }
+        
+        .log-line.success {
+            color: #27ae60;
+        }
+        
+        .logs-status {
+            background: #34495e;
+            padding: 8px 15px;
+            border-top: 1px solid #7f8c8d;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 0.7rem;
+            color: #bdc3c7;
+        }
+        
+        .logs-status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        
+        .logs-status-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: #27ae60;
+            animation: pulse 2s infinite;
+        }
+        
+        .logs-stats {
+            display: flex;
+            gap: 10px;
+        }
+        
+        .logs-empty {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            color: #7f8c8d;
+            font-size: 0.9rem;
+        }
+        
+        .logs-empty svg {
+            width: 32px;
+            height: 32px;
+            margin-bottom: 8px;
+            opacity: 0.5;
+        }
+        
+        .hidden {
+            display: none;
+        }
+        
+        /* Responsive */
+        @media (max-width: 480px) {
+            .container {
+                flex-direction: column;
+            }
+            
+            .left-panel {
+                width: 100%;
+                height: 80px;
+                flex-direction: row;
+                padding: 10px;
+                gap: 10px;
+                justify-content: center;
+                align-items: center;
+            }
+            
+            .btn {
+                flex-direction: row;
+                padding: 10px;
+                gap: 5px;
+                font-size: 0.7rem;
+            }
+            
+            .content-area {
+                padding: 15px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="left-panel">            
+            <form method="post" action="/toggle" id="stopForm">
+                <button type="submit" class="btn btn-stop" id="stopButton">
+                    <svg class="icon" viewBox="0 0 24 24">
+                        <path d="M6,19H10V5H6V19ZM14,5V19H18V5H14Z"/>
+                    </svg>
+                    <span>STOP</span>
+                    <div class="countdown" id="countdown" style="display: none;"></div>
+                </button>
+            </form>
+            
+            <button class="btn btn-logs" id="logsButton">
+                <svg class="icon" viewBox="0 0 24 24">
+                    <path d="M13,9H18.5L13,3.5V9M6,2H14L20,8V20A2,2 0 0,1 18,22H6C4.89,22 4,21.1 4,20V4C4,2.89 4.89,2 6,2M15,18V16H6V18H15M18,14V12H6V14H18Z"/>
+                </svg>
+                <span>LOGS</span>
+            </button>
+            
+            <button class="btn btn-transcription active" id="transcriptionButton">
+                <svg class="icon" viewBox="0 0 24 24">
+                    <path d="M17,7H22V17H17V19A1,1 0 0,0 18,20H20V22H17.5C16.95,22 16,21.55 16,21C16,21.55 15.05,22 14.5,22H12V20H14A1,1 0 0,0 15,19V5A1,1 0 0,0 14,4H12V2H14.5C15.05,2 16,2.45 16,3C16,2.45 16.95,2 17.5,2H20V4H18A1,1 0 0,0 17,5V7M2,7H13V9H4V15H13V17H2V7M20,15H17V9H20V15M8.5,12A0.5,0.5 0 0,0 9,11.5A0.5,0.5 0 0,0 8.5,11A0.5,0.5 0 0,0 8,11.5A0.5,0.5 0 0,0 8.5,12Z"/>
+                </svg>
+                <span>TEXT</span>
+            </button>
+        </div>
+        
+        <div class="right-panel">
+            <div class="content-area">
+                <div class="transcription-view" id="transcriptionView">
+                    <div class="transcription-section">
+                        <div class="transcription-label">
+                            <svg class="transcription-icon" viewBox="0 0 24 24">
+                                <path d="M12,2A3,3 0 0,1 15,5V11A3,3 0 0,1 12,14A3,3 0 0,1 9,11V5A3,3 0 0,1 12,2M19,11C19,14.53 16.39,17.44 13,17.93V21H11V17.93C7.61,17.44 5,14.53 5,11H7A5,5 0 0,0 12,16A5,5 0 0,0 17,11H19Z"/>
+                            </svg>
+                            Source Audio
+                        </div>
+                        <textarea class="transcription-text source" id="sourceText" readonly>
+Listening for audio input...
+                        </textarea>
+                    </div>
+                    
+                    <div class="transcription-section">
+                        <div class="transcription-label">
+                            <svg class="transcription-icon" viewBox="0 0 24 24">
+                                <path d="M12.87,15.07L10.33,12.56L10.36,12.53C12.1,10.59 13.34,8.36 14.07,6H17V4H10V2H8V4H1V6H12.17C11.5,7.92 10.44,9.75 9,11.35C8.07,10.32 7.3,9.19 6.69,8H4.69C5.42,9.63 6.42,11.17 7.67,12.56L2.58,17.58L4,19L9,14L12.11,17.11L12.87,15.07M18.5,10H16.5L12,22H14L15.12,19H19.87L21,22H23L18.5,10M15.88,17L17.5,12.67L19.12,17H15.88Z"/>
+                            </svg>
+                            Translation
+                        </div>
+                        <textarea class="transcription-text translation" id="translationText" readonly>
+Translation will appear here...
+                        </textarea>
+                    </div>
+                </div>
+                
+                <div class="logs-view hidden" id="logsView">
+                    <div class="logs-content" id="logsContent">
+                        <div class="logs-empty">
+                            <svg viewBox="0 0 24 24">
+                                <path d="M13,9H18.5L13,3.5V9M6,2H14L20,8V20A2,2 0 0,1 18,22H6C4.89,22 4,21.1 4,20V4C4,2.89 4.89,2 6,2M15,18V16H6V18H15M18,14V12H6V14H18Z"/>
+                            </svg>
+                            Loading logs...
+                        </div>
+                    </div>
+                    
+                    <div class="logs-status">
+                        <div class="logs-status-indicator">
+                            <div class="logs-status-dot"></div>
+                            <span>Service Active</span>
+                        </div>
+                        
+                        <div class="logs-stats">
+                            <span>Lines: <span id="logsLineCount">0</span></span>
+                            <span>Updated: <span id="logsLastUpdate">Never</span></span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        const logsView = document.getElementById("logsView");
+        const logsContent = document.getElementById("logsContent");
+        const logsLineCount = document.getElementById("logsLineCount");
+        const logsLastUpdate = document.getElementById("logsLastUpdate");
+        const transcriptionView = document.getElementById("transcriptionView");
+        const sourceText = document.getElementById("sourceText");
+        const translationText = document.getElementById("translationText");
+        const logsButton = document.getElementById("logsButton");
+        const transcriptionButton = document.getElementById("transcriptionButton");
+        const stopButton = document.getElementById("stopButton");
+        const stopForm = document.getElementById("stopForm");
+        const countdown = document.getElementById("countdown");
+        let refreshInterval;
+        let logsRefreshInterval;
+        let isStoppingProcess = false;
+        let currentView = 'transcription';
+        let logLines = [];
+        
+        // Function to format log line with color coding
+        function formatLogLine(line) {
+            const div = document.createElement('div');
+            div.className = 'log-line';
+            
+            // Remove timestamp from log line, keep only level and message
+            let displayLine = line;
+            
+            // Pattern to match: LEVEL - YYYY-MM-DD HH:MM:SS,mmm - Message (old format)
+            const oldFormatMatch = line.match(/^(INFO|ERROR|WARNING|SUCCESS|CRITICAL|WARN) - \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3} - (.+)$/);
+            if (oldFormatMatch) {
+                const level = oldFormatMatch[1];
+                const message = oldFormatMatch[2];
+                displayLine = `${level} - ${message}`;
+            } else {
+                // Try new format: YYYY-MM-DD HH:MM:SS,mmm - Message (assuming INFO level)
+                const newFormatMatch = line.match(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3} - (.+)$/);
+                if (newFormatMatch) {
+                    const message = newFormatMatch[1];
+                    displayLine = `INFO - ${message}`;
+                }
+            }
+            
+            // Color coding based on log level or message content
+            if (line.includes('ERROR') || line.includes('CRITICAL')) {
+                div.className += ' error';
+            } else if (line.includes('WARNING') || line.includes('WARN')) {
+                div.className += ' warning';
+            } else if (line.includes('SUCCESS') || line.includes('OK')) {
+                div.className += ' success';
+            } else {
+                div.className += ' info';
+            }
+            
+            div.textContent = displayLine;
+            return div;
+        }
+        
+        // Function to refresh logs for the logs view
+        async function refreshLogsView() {
+            try {
+                const response = await fetch('/get_logs?lines=9');
+                const logs = await response.text();
+                
+                if (logs.trim()) {
+                    logsContent.innerHTML = '';
+                    logLines = logs.split('\n').filter(line => line.trim());
+                    
+                    logLines.forEach(line => {
+                        const logElement = formatLogLine(line);
+                        logsContent.appendChild(logElement);
+                    });
+                    
+                    // Update stats
+                    logsLineCount.textContent = logLines.length;
+                    logsLastUpdate.textContent = new Date().toLocaleTimeString();
+                    
+                    // Auto-scroll to bottom
+                    logsContent.scrollTop = logsContent.scrollHeight;
+                } else {
+                    logsContent.innerHTML = '<div class="logs-empty"><svg viewBox="0 0 24 24"><path d="M13,9H18.5L13,3.5V9M6,2H14L20,8V20A2,2 0 0,1 18,22H6C4.89,22 4,21.1 4,20V4C4,2.89 4.89,2 6,2M15,18V16H6V18H15M18,14V12H6V14H18Z"/></svg>No logs available</div>';
+                }
+            } catch (error) {
+                logsContent.innerHTML = '<div class="logs-empty"><svg viewBox="0 0 24 24"><path d="M13,9H18.5L13,3.5V9M6,2H14L20,8V20A2,2 0 0,1 18,22H6C4.89,22 4,21.1 4,20V4C4,2.89 4.89,2 6,2M15,18V16H6V18H15M18,14V12H6V14H18Z"/></svg>Error loading logs</div>';
+                console.error('Error loading logs:', error);
+            }
+        }
+        
+        // Function to switch views
+        function switchView(view) {
+            if (view === 'logs') {
+                logsView.classList.remove('hidden');
+                transcriptionView.classList.add('hidden');
+                logsButton.classList.add('active');
+                transcriptionButton.classList.remove('active');
+                currentView = 'logs';
+                
+                // Start logs auto-refresh
+                refreshLogsView();
+                logsRefreshInterval = setInterval(refreshLogsView, 2000);
+            } else {
+                transcriptionView.classList.remove('hidden');
+                logsView.classList.add('hidden');
+                transcriptionButton.classList.add('active');
+                logsButton.classList.remove('active');
+                currentView = 'transcription';
+                
+                // Stop logs auto-refresh when switching away
+                if (logsRefreshInterval) {
+                    clearInterval(logsRefreshInterval);
+                    logsRefreshInterval = null;
+                }
+            }
+        }
+        
+        // Button event listeners
+        logsButton.addEventListener('click', () => switchView('logs'));
+        transcriptionButton.addEventListener('click', () => switchView('transcription'));
+        
+        // Function to refresh logs (simple version for transcription view)
+        async function refreshLogs() {
+            try {
+                const response = await fetch('/get_logs');
+                const logs = await response.text();
+                // This is only used if we had the old simple logs view
+            } catch (error) {
+                console.error('Error:', error);
+            }
+        }
+        
+        // Function to simulate transcription updates
+        function updateTranscription() {
+            const sampleSources = [
+                "Hello, how are you today?",
+                "I'm doing well, thank you for asking.",
+                "Can you help me with translation?",
+                "Of course, I'd be happy to help.",
+                "What language would you like to translate to?",
+                "I need to translate this to French.",
+                "No problem, I can handle that translation.",
+                "The weather is really nice today.",
+                "Would you like to go for a walk?",
+                "That sounds like a great idea.",
+                "I really appreciate your help with this.",
+                "Thank you so much for your assistance."
+            ];
+            
+            const sampleTranslations = [
+                "Bonjour, comment allez-vous aujourd'hui ?",
+                "Je vais bien, merci de demander.",
+                "Pouvez-vous m'aider avec la traduction ?",
+                "Bien sûr, je serais heureux de vous aider.",
+                "Vers quelle langue souhaitez-vous traduire ?",
+                "J'ai besoin de traduire ceci en français.",
+                "Pas de problème, je peux gérer cette traduction.",
+                "Le temps est vraiment agréable aujourd'hui.",
+                "Aimeriez-vous faire une promenade ?",
+                "Cela semble être une excellente idée.",
+                "J'apprécie vraiment votre aide à ce sujet.",
+                "Merci beaucoup pour votre assistance."
+            ];
+            
+            // Randomly update transcription every 2-4 seconds
+            if (Math.random() > 0.6) {
+                const randomIndex = Math.floor(Math.random() * sampleSources.length);
+                const randomSource = sampleSources[randomIndex];
+                const randomTranslation = sampleTranslations[randomIndex];
+                
+                sourceText.textContent = randomSource;
+                translationText.textContent = randomTranslation;
+                
+                // Auto-scroll to bottom for both text areas
+                sourceText.scrollTop = sourceText.scrollHeight;
+                translationText.scrollTop = translationText.scrollHeight;
+            }
+        }
+        
+        // Handle stop button click
+        stopForm.addEventListener('submit', function(e) {
+            e.preventDefault();
+            
+            if (isStoppingProcess) return;
+            
+            isStoppingProcess = true;
+            stopButton.disabled = true;
+            
+            // Send stop request
+            fetch('/toggle', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                }
+            }).then(() => {
+                // Start countdown
+                let timeLeft = 3;
+                countdown.style.display = 'block';
+                countdown.textContent = `${timeLeft}s`;
+                
+                const countdownInterval = setInterval(() => {
+                    timeLeft--;
+                    countdown.textContent = `${timeLeft}s`;
+                    
+                    if (timeLeft <= 0) {
+                        clearInterval(countdownInterval);
+                        window.location.href = '/';
+                    }
+                }, 1000);
+            }).catch(error => {
+                console.error('Error stopping service:', error);
+                isStoppingProcess = false;
+                stopButton.disabled = false;
+                countdown.style.display = 'none';
+            });
+        });
+        
+        // Start auto-refresh for transcription
+        refreshInterval = setInterval(() => {
+            updateTranscription();
+        }, 3000);
+        
+        // Initial load
+        // refreshLogs(); // Not needed anymore
+        
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', () => {
+            if (refreshInterval) {
+                clearInterval(refreshInterval);
+            }
+            if (logsRefreshInterval) {
+                clearInterval(logsRefreshInterval);
+            }
+        });
+        
+        // Keyboard shortcuts
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'r' || e.key === 'R') {
+                e.preventDefault();
+                if (currentView === 'logs') {
+                    refreshLogsView();
+                }
+            }
+            if (e.key === 'l' || e.key === 'L') {
+                e.preventDefault();
+                switchView('logs');
+            }
+            if (e.key === 't' || e.key === 'T') {
+                e.preventDefault();
+                switchView('transcription');
+            }
+        });
+    </script>
+</body>
+</html>

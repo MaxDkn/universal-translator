@@ -11,4 +11,9 @@ dependencies = [
     "silero-vad",
     "edge-tts",
     "pydub>=0.25.1",
+    "uvicorn",
+    "fastapi",
+    "jinja2",
+    "itsdangerous",
+    "python-multipart",
 ]
