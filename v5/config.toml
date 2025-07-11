@@ -1,0 +1,10 @@
+silence_timeout = 30
+prebuffer_seconds = 5.5
+
+[devices]
+agent = "CM477"
+phone = "CM477"
+
+[languages]
+agent = "fr"
+phone = "en"
