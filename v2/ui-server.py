@@ -145,8 +145,8 @@ async def websocket_endpoint(websocket: WebSocket):
 async def settings_get(request: Request):
     return templates.TemplateResponse("settings.html", {
         "request": request,
-        "agent_device": config.get('device', 'agent'),
-        "phone_device": config.get('device', 'phone'),
+        "agent_device": config.get('devices', 'agent'),
+        "phone_device": config.get('devices', 'phone'),
         "current_language": config.get('languages', 'agent'),
         "devices": ["CM477", "KT AUDIO"],
         "languages": ["fr", "en", "de", "es"]

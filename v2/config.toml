@@ -2,9 +2,9 @@ silence_timeout = 30
 prebuffer_seconds = 5.5
 
 [devices]
-agent = "CM477-30757"
-phone = "KT USB Audio"
+agent = "CM477"
+phone = "KT AUDIO"
 
 [languages]
-agent = "en"
+agent = "de"
 phone = "fr"

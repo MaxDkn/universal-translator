@@ -7,30 +7,52 @@ Real-time audio translation system with automatic voice detection.
 Captures audio from two sources (headset + phone), transcribes speech, and translates between languages in real-time using Gladia API.
 
 ```
-Phone ←→ [Translation Hub] ←→ Headset
+Phone ←→ [Translation Hub] ←→ Agent
 ```
 
 ## Quick Start
 
-1. **Install**
-   ```bash
-   uv sync
-   export GLADIA_API_KEY="your-key"
-   ```
+### 1. Install
 
-2. **Find your audio devices**
-   ```bash
-   uv run python script.py --list-devices
-   ```
+```bash
+uv sync
+export GLADIA_API_KEY="your-key"
+````
+---
 
-3. **Run**
-   ```bash
-   sudo uv run python script.py \
-     --agent-device "your-headset" \
-     --agent-language fr \
-     --phone-device "your-phone-device" \
-     --phone-language auto
-   ```
+### 2. On CLI
+
+#### a. Find your audio devices
+
+```bash
+uv run python script.py --list-devices
+```
+
+#### b. Run
+
+```bash
+sudo uv run python script.py \
+  --agent-device "your-headset" \
+  --agent-language fr \
+  --phone-device "your-phone-device" \
+  --phone-language auto
+```
+
+---
+
+### 3. With the User Interface
+
+#### a. Run the server
+
+```bash
+uv run ui-server.py
+```
+
+#### b. Launch the app
+
+```bash
+chromium-browser --app=http://127.0.0.1:8000 --start-fullscreen --disable-gpu --disable-software-rasterizer
+```
 
 ## Features
 
