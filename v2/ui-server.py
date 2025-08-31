@@ -1,22 +1,24 @@
 import asyncio
+import os
 from fastapi import FastAPI, Request, Form, Query, BackgroundTasks
 from fastapi.responses import RedirectResponse, PlainTextResponse
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from contextlib import asynccontextmanager
-from script import GladiaAudioManager, log_capture_string, get_device_info
+from script import GladiaAudioManager, log_capture_string, get_device_info, is_gladia_key_valid, launch_gladia
 from config import config
 import logging
 
 logger = logging.getLogger(__name__)
-
+logger.setLevel(logging.DEBUG)
 MAX_LOG_LINES = 50
 
 agent_to_phone = None
 is_running = False
 background_task = None
-
+gladia_key = os.getenv("GLADIA_API_KEY")
+gladia_key = is_gladia_key_valid(gladia_key)
 agent_device = "CM477"
 phone_device = "KT AUDIO"
 agent_language = "en"
@@ -84,6 +86,11 @@ def stop_gladia():
             background_task = None
         logger.info("GladiaAudioManager stopped")
 
+@app.get('/launch_manually')
+async def launch_like_script():
+    launch_gladia(gladia_key, get_device_info('CM'), get_device_info('KT'), "fr", "en")
+    return 0
+
 @app.get('/LaunchGladia')
 async def launch_gladia():
     """Endpoint pour lancer manuellement (gardé pour compatibilité)"""
@@ -148,7 +155,7 @@ async def settings_get(request: Request):
         "agent_device": config.get('devices', 'agent'),
         "phone_device": config.get('devices', 'phone'),
         "current_language": config.get('languages', 'agent'),
-        "devices": ["CM477", "KT AUDIO"],
+        "devices": ["CM477", "KT USB Audio"],
         "languages": ["fr", "en", "de", "es"]
     })
 
@@ -183,7 +190,7 @@ async def settings_post(
     return RedirectResponse(url="/", status_code=303)
 
 @app.get("/launch")
-async def launch(request: Request):
+async def launch_gladia(request: Request):
     """Page de lancement - démarre automatiquement Gladia"""
     global is_running
     

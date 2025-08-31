@@ -1,0 +1,1 @@
+Cette version sert seulement à vérifier que l'on peut envoyer de l'audio du micro A vers un casque B et inversement

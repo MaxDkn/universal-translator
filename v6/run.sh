@@ -1,0 +1,1 @@
+uv run --with numpy,sounddevice script.py

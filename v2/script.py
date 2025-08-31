@@ -2,6 +2,7 @@ import os
 import io
 import json
 import time
+import wave
 import queue
 import atexit
 import base64
@@ -29,8 +30,37 @@ from websockets.asyncio.client import ClientConnection, connect
 from silero_vad import get_speech_timestamps, load_silero_vad
 warnings.filterwarnings("ignore", message="Sampling rate is a multiply of 16000")
 
+
+class AudioLogger:
+    def __init__(self, filename: str, samplerate: int = 16000, channels: int = 1):
+        self.filename = filename
+        self.samplerate = samplerate
+        self.channels = channels
+        self.wav_file = wave.open(filename, "wb")
+        self.wav_file.setnchannels(channels)
+        self.wav_file.setsampwidth(2)  # 16-bit PCM
+        self.wav_file.setframerate(samplerate)
+
+    def write(self, data: bytes):
+        """Écrit des frames PCM dans le fichier"""
+        self.wav_file.writeframes(data)
+
+    def close(self):
+        self.wav_file.close()
+
+
 log_capture_string = io.StringIO()
 log_memory_handler = None
+  
+TRANSLATE_LEVEL = 25
+logging.addLevelName(TRANSLATE_LEVEL, 'TRANSLATE')
+
+def translate(self, message, *args, **kwargs):
+    if self.isEnabledFor(TRANSLATE_LEVEL):
+        self._log(TRANSLATE_LEVEL, message, args, **kwargs)
+
+
+logging.Logger.translate = translate
 
 class AlignedFormatter(logging.Formatter):
     """
@@ -53,7 +83,7 @@ class AlignedFormatter(logging.Formatter):
     }
     RESET = '\033[0m'
     
-    def __init__(self, colored: bool = True):
+    def __init__(self, colored: bool = False):
         """
         Initialize the formatter.
         
@@ -147,14 +177,14 @@ def setup_logging_with_capture():
     global log_memory_handler, log_capture_string
     
     console_handler = logging.StreamHandler()
-    console_formatter = AlignedFormatter(colored=True)
+    console_formatter = AlignedFormatter(colored=False)
     console_handler.setFormatter(console_formatter)
     
     log_capture_string = io.StringIO()
     memory_handler = logging.StreamHandler(log_capture_string)
     memory_formatter = AlignedFormatter(colored=False)
     memory_handler.setFormatter(memory_formatter)
-
+  
     logger = logging.getLogger()
     logging.getLogger('websockets').setLevel(logging.WARNING)
     logging.getLogger('websockets.client').setLevel(logging.WARNING)
@@ -414,6 +444,9 @@ class AudioCapture:
         logger.debug(f"Using device: {self.device.name}")
         logger.debug(f"Device default rate: {self.device.sample_rate} Hz")
         logger.debug(f"Selected rate: {self.SAMPLE_RATE} Hz")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"logs/audio/input_{device.index}_gladia_logs_{timestamp}.wav"
+        self.audio_logger = AudioLogger(filename, samplerate=device.sample_rate, channels=1)
         
     def _find_best_sample_rate_for_device(self):
         """
@@ -558,6 +591,7 @@ class AudioCapture:
                     self.FRAMES_PER_BUFFER, 
                     exception_on_overflow=False
                 )
+                self.audio_logger.write(data)
                 self.buffer.add_chunk(data)
                 time.sleep(0.01)
             except Exception as e:
@@ -705,7 +739,7 @@ class AudioPlayback:
 
 
 class TTSService:
-    def __init__(self, playback_audio: AudioPlayback, voice: str = "fr-FR-DenisNeural"):
+    def __init__(self, playback_audio: AudioPlayback, voice: str = "fr-FR-DeniseNeural"):
         self.playback_audio = playback_audio
         self.playback_buffer = playback_audio.buffer
         self.voice = voice
@@ -849,14 +883,14 @@ class TranscriptionAndVoiceService:
             content = json.loads(message)
             if self.is_transcribing and content["type"] == "translation":
                 text = content["data"]["translated_utterance"]["text"].strip()
-                logger.info(f"[Transcription]: {text}")
+                logger.translate(f"[{self.audio_capture.device.name}]: {text}")
                 
                 if self.tts_service and text:
                     asyncio.create_task(self.tts_service.synthesize_and_queue(text))
                     
             elif content["type"] == "transcription":
                 text = content["data"]["translated_utterance"]["text"].strip()
-                print(" "*4, text)
+                logger.translate(" "*4, text)
             
             
             if content["type"] == "post_final_transcript":
@@ -1128,7 +1162,7 @@ class VADTranscriptionController:
 
 class GladiaAudioManager:
     voice_edge_tts = {
-        "fr": "fr-FR-DenisNeural",
+        "fr": "fr-FR-DeniseNeural",
         "en": "en-US-AriaNeural",
         "es": "es-ES-AlvaroNeural",
         "de": "de-DE-ConradNeural"
@@ -1281,9 +1315,9 @@ def get_all_audio_devices(filter: list[str] = ["dmix", "to_headset", "from_pc", 
 
     return input_devices, output_devices
 
-def get_device_info(device_name: str) -> AudioDevice:
+def get_device_info(device_name: str, index=None) -> AudioDevice:
     """
-    Find audio device info by USB device name with fallback options.
+    Find audio device info by USB device name with fallback options. Or by index.
 
     Args:
         device_name (str): USB device name to search for.
@@ -1296,6 +1330,16 @@ def get_device_info(device_name: str) -> AudioDevice:
     """
     p = pyaudio.PyAudio()
     
+    if index is not None:
+        device_info = p.get_device_info_by_index(index)
+        return AudioDevice(
+            index=index,
+            name=str(device_info['name']),
+            sample_rate=int(device_info['defaultSampleRate']),
+            max_input_channels=int(device_info['maxInputChannels']),
+            max_output_channels=int(device_info['maxOutputChannels'])
+        )
+
     candidates = []
     
     for i in range(p.get_device_count()):
@@ -1352,34 +1396,44 @@ def list_audio_devices():
 
 atexit.register(save_logs_to_file)
 
-async def launch(gladia_key: str, agent_device: AudioDevice, phone_device: AudioDevice, 
+async def launch_gladia(gladia_key: str, agent_device: AudioDevice, phone_device: AudioDevice, 
                  agent_language: str, phone_language: str, 
                  silence_timeout: int = 30, prebuffer_seconds: int = 5.5):
 
     agent_to_phone = GladiaAudioManager(
         gladia_key, 
-
         input_device=agent_device,
         output_device=phone_device,
         input_language=agent_language, 
         output_language=phone_language,
-        
-        silence_timeout=silence_timeout, 
-        prebuffer_seconds=prebuffer_seconds,
+        silence_timeout=silence_timeout,
+        prebuffer_seconds=prebuffer_seconds
     ).start_audio_capture().start_vad_monitoring()
+
+    phone_to_agent = GladiaAudioManager(
+        gladia_key, 
+        input_device=phone_device,
+        output_device=agent_device,
+        input_language=phone_language, 
+        output_language=agent_language,
+        silence_timeout=silence_timeout,
+        prebuffer_seconds=prebuffer_seconds
+    ).start_audio_capture().start_vad_monitoring()
+
+    
+
     logger.setLevel(logging.DEBUG)
     logger.info(f"TTS enabled - Output device: {phone_device.name} | Input device: {agent_device.name}")
-    logger.info('Starting transcription...\n')
+    logger.info('Starting transcription...')
 
     try:
-        while True:
-            if input().lower() in ['q', '']:
-                break
+        while True:            
             await asyncio.sleep(0.1)
     except KeyboardInterrupt:
         logger.info("Program interrupted by user.")
     finally:
         agent_to_phone.cleanup()
+        phone_to_agent.cleanup()
         logger.info("Goodbye!")
 
 
@@ -1391,9 +1445,11 @@ async def main(allowed_languages: List[str] = ["fr", "en", "es", "de"],
 
     parser.add_argument("--gladia-key", type=str, help="Gladia API key. If omitted, will try the 'GLADIA_KEY' environment variable.")
     
-    parser.add_argument("--agent-device",   type=get_device_info, help="USB device name for agent mic (e.g., 'CM477').")
+    #  parser.add_argument("--agent-device",   type=get_device_info, help="USB device name for agent mic (e.g., 'CM477').")
+    parser.add_argument("--agent-device-id", type=int)
     parser.add_argument("--agent-language", choices=allowed_languages, default="fr", help="Language spoken by the agent.")
-    parser.add_argument("--phone-device",   type=get_device_info, help="USB device name for phone mic.")
+    #  parser.add_argument("--phone-device",   type=get_device_info, help="USB device name for phone mic.")
+    parser.add_argument("--phone-device-id", type=int)
     parser.add_argument("--phone-language", choices=allowed_languages, default="en", help="Language spoken by the phone.")
     
     parser.add_argument("--list-devices", action="store_true", help="List all available audio devices and exit.")
@@ -1406,16 +1462,21 @@ async def main(allowed_languages: List[str] = ["fr", "en", "es", "de"],
         list_audio_devices()
         return
     else:
-        if not args.agent_device or not args.phone_device:
-            logger.error(f"--agent-device ({args.agent_device}) and --phone-device ({args.phone_device}) cannot be empty.")
+        if args.agent_device_id is None or args.phone_device_id is None:
+            logger.error(f"--agent-device-id ({args.agent_device_id}) and --phone-device-id ({args.phone_device_id}) cannot be empty.")
             return
+        args.agent_device = get_device_info(device_name="toto", index=args.agent_device_id)
+        args.phone_device = get_device_info(device_name="toto", index=args.phone_device_id)
     
     gladia_key = args.gladia_key or os.getenv("GLADIA_API_KEY")
     gladia_key = is_gladia_key_valid(gladia_key)
         
     logger.info(f"===== Gladia Live Transcription + Auto VAD + Pre-buffer ({prebuffer_seconds}s) =====")
-    await launch(gladia_key, agent_device=args.agent_device, phone_device=args.phone_device, agent_language=args.agent_language, phone_language=args.phone_language, silence_timeout=silence_timeout, prebuffer_seconds=prebuffer_seconds)
-
+    await launch_gladia(gladia_key, agent_device=args.agent_device, phone_device=args.phone_device, agent_language=args.agent_language, phone_language=args.phone_language, silence_timeout=silence_timeout, prebuffer_seconds=prebuffer_seconds)
+    
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        exit(0)

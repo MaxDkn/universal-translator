@@ -1,0 +1,1 @@
+uv run --with moshi_mlx,sounddevice,numpy script.py
