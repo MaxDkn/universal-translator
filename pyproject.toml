@@ -1,0 +1,24 @@
+[project]
+name = "universal-translation"
+version = "0.1.0"
+description = "An universal translation service using gladia stt"
+readme = "README.md"
+authors = [
+    { name = "MaxDkn", email = "max.deckmyn@gmail.com" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "edge-tts>=7.2.3",
+    "pyaudio>=0.2.14",
+    "pydub>=0.25.1",
+    "requests>=2.32.5",
+    "silero-vad>=6.0.0",
+    "websockets>=15.0.1",
+]
+
+[project.scripts]
+universal-translation = "universal_translation:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

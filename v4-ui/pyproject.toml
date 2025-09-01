@@ -1,0 +1,12 @@
+[project]
+name = "universal-translator-ui"
+version = "0.1.0"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "jinja2",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
