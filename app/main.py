@@ -4,10 +4,10 @@ import logging
 import argparse
 from typing import List
 
-from managers.audio_manager import GladiaAudioManager
-from services.transcription import is_gladia_key_valid
-from utils.logging_utils import setup_logging_with_capture
-from audio.devices import list_audio_devices, get_device_info
+from .managers.audio_manager import GladiaAudioManager
+from .services.transcription import is_gladia_key_valid
+from .utils.logging_utils import setup_logging_with_capture
+from .audio.devices import list_audio_devices, get_device_info
 
 logger = setup_logging_with_capture()
 
@@ -114,8 +114,13 @@ async def main(allowed_languages: List[str] = ["fr", "en", "es", "de"],
     )
 
 
-if __name__ == "__main__":
+def cli():
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
         exit(0)
+
+
+if __name__ == "__main__":
+    cli()
+    

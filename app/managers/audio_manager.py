@@ -1,11 +1,12 @@
 import logging
 from silero_vad import load_silero_vad
-from audio.devices import AudioDevice
-from audio.buffers import SharedAudioBuffer, SharedAudioPlaybackBuffer
-from audio.io import AudioCapture, AudioPlayback
-from services.tts import TTSService
-from services.transcription import TranscriptionAndVoiceService
-from services.vad import VADTranscriptionController
+
+from ..audio.devices import AudioDevice
+from ..audio.buffers import SharedAudioBuffer, SharedAudioPlaybackBuffer
+from ..audio.io import AudioCapture, AudioPlayback
+from ..services.tts import TTSService
+from ..services.transcription import TranscriptionAndVoiceService
+from ..services.vad import VADTranscriptionController
 
 logger = logging.getLogger(__name__)
 

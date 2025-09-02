@@ -7,9 +7,10 @@ from datetime import datetime
 import torch
 import numpy as np
 from silero_vad import get_speech_timestamps
-from core.enums import TranscriptionState
-from audio.io import AudioCapture
-from services.transcription import TranscriptionAndVoiceService
+
+from ..core.enums import TranscriptionState
+from ..audio.io import AudioCapture
+from .transcription import TranscriptionAndVoiceService
 
 logger = logging.getLogger(__name__)
 

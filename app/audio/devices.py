@@ -1,6 +1,7 @@
 import pyaudio
 import logging
-from core.exceptions import DeviceNotFoundException
+
+from ..core.exceptions import DeviceNotFoundException
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +35,8 @@ def get_all_audio_devices(filter_list: list[str] = None) -> list:
         filter_list = ["dmix", "to_headset", "from_pc", "dmix_combined", 
                       "spdif", "iec958", "both_outputs", "vdownmix", "upmix", 
                       "speex", "speexrate", "samplerate", "lavrate", 
-                      "surround40", "front", "sysdefault", "a52"]
+                      "surround40", "front", "sysdefault", "a52", "pulse", "default",
+                      "pipewire"]
     
     p = pyaudio.PyAudio()
     input_devices = []

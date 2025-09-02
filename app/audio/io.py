@@ -3,10 +3,11 @@ import threading
 import pyaudio
 import logging
 from datetime import datetime
-from core.exceptions import AudioStreamStartException
-from audio.devices import AudioDevice
-from audio.buffers import SharedAudioBuffer, SharedAudioPlaybackBuffer
-from utils.audio_logger import AudioLogger
+
+from .devices import AudioDevice
+from ..utils.audio_logger import AudioLogger
+from ..core.exceptions import AudioStreamStartException
+from .buffers import SharedAudioBuffer, SharedAudioPlaybackBuffer
 
 logger = logging.getLogger(__name__)
 
@@ -31,8 +32,9 @@ class AudioCapture:
         logger.debug(f"Device default rate: {self.device.sample_rate} Hz")
         logger.debug(f"Selected rate: {self.SAMPLE_RATE} Hz")
         
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"logs/audio/input_{device.index}_gladia_logs_{timestamp}.wav"
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        filename = f"{timestamp} input-{device.index}.wav"
+        logger.info("AudioLogger created")
         self.audio_logger = AudioLogger(filename, samplerate=device.sample_rate, channels=1)
 
     def _find_best_sample_rate_for_device(self):

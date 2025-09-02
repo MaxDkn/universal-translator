@@ -4,6 +4,12 @@ import atexit
 import logging
 from datetime import datetime
 
+from pathlib import Path
+
+def get_project_root() -> Path:
+    current_file = Path(__file__).resolve()
+    return current_file.parent.parent.parent
+
 
 log_capture_string = io.StringIO()
 log_memory_handler = None
@@ -113,23 +119,22 @@ def setup_logging_with_capture():
 
 
 def save_logs_to_file():
-    """Save captured logs to a timestamped file in the logs directory."""
     global log_capture_string
     
     if log_capture_string is None:
         return
         
     try:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"gladia_logs_{timestamp}.txt"
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        filename = f"{timestamp}.txt"
         log_content = log_capture_string.getvalue()
         
         if log_content.strip():
-            logs_dir = "logs"
-            if not os.path.exists(logs_dir):
-                os.makedirs(logs_dir)
-                
-            filepath = os.path.join(logs_dir, filename)
+            project_root = get_project_root()
+            logs_dir = project_root / "logs"
+            logs_dir.mkdir(exist_ok=True)
+
+            filepath = logs_dir / filename
             with open(filepath, 'w', encoding='utf-8') as f:
                 f.write(create_styled_header())
                 f.write("\n")

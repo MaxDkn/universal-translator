@@ -81,16 +81,12 @@ Install Python 3.8+ and Visual Studio build tools.
 ```bash
 # Clone the project
 git clone git@github.com:MaxDkn/universal-translator.git
-cd gladia_transcription
+cd universal-translator
 
 # Create and activate environment
-uv venv
-source .venv/bin/activate  # Linux/Mac
-# or
-.venv\Scripts\activate     # Windows
-
-# Install dependencies
-uv pip install -e .
+uv sync
+#  Run the main script (cli)
+uv run gladia-translation
 ```
 
 ## Configuration

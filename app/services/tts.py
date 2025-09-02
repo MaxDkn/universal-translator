@@ -2,7 +2,8 @@ import io
 import logging
 import edge_tts
 from pydub import AudioSegment
-from audio.io import AudioPlayback
+
+from ..audio.io import AudioPlayback
 
 logger = logging.getLogger(__name__)
 

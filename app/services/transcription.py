@@ -6,16 +6,17 @@ import requests
 import logging
 from websockets.exceptions import ConnectionClosedOK
 from websockets.asyncio.client import ClientConnection, connect
-from core.enums import InitiateResponse, StreamingConfiguration
-from audio.io import AudioCapture
-from services.tts import TTSService
+
+from ..core.enums import InitiateResponse, StreamingConfiguration
+from ..audio.io import AudioCapture
+from .tts import TTSService
 
 logger = logging.getLogger(__name__)
 
 
 def is_gladia_key_valid(key: str | None, url: str = "https://api.gladia.io/v2/pre-recorded") -> str:
     """Checks if the Gladia key is valid."""
-    from core.exceptions import InvalidGladiaKeyException
+    from ..core.exceptions import InvalidGladiaKeyException
     
     if not key:
         raise InvalidGladiaKeyException("No Gladia API key provided and 'GLADIA_KEY' environment variable not set.")
@@ -81,7 +82,7 @@ class TranscriptionAndVoiceService:
             "https://api.gladia.io/v2/live",
             headers={"X-Gladia-Key": self.gladia_key},
             json=self.STREAMING_CONFIGURATION,
-            timeout=3,
+            timeout=10,
         )
         
         if not response.ok:
